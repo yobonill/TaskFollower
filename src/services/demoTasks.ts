@@ -1,0 +1,68 @@
+import type { Task } from "../models/task";
+import { addDays, toDateInputValue } from "../utils/taskDates";
+
+const now = new Date();
+const timestamp = now.toISOString();
+
+export const createDemoTasks = (): Task[] => [
+  {
+    id: "demo-electricity",
+    name: "Pagar la factura de electricidad",
+    description: "Pagar la factura antes de que cierre la oficina de pagos.",
+    estimatedMinutes: 15,
+    dueDate: toDateInputValue(now),
+    dueTime: "17:00",
+    urgency: "high",
+    assignedBy: "Yisel",
+    assignedTo: "Yorki",
+    status: "pending",
+    recurrence: { type: "monthly", interval: 1 },
+    recurrenceSeriesId: "series-electricity",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  },
+  {
+    id: "demo-groceries",
+    name: "Preparar la lista del supermercado",
+    description: "Revisar qué hace falta antes de ir al supermercado.",
+    estimatedMinutes: 20,
+    dueDate: toDateInputValue(addDays(now, 1)),
+    urgency: "normal",
+    assignedBy: "Yorki",
+    assignedTo: "Yisel",
+    status: "pending",
+    recurrence: { type: "weekly", interval: 1 },
+    recurrenceSeriesId: "series-groceries",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  },
+  {
+    id: "demo-appointment",
+    name: "Confirmar la cita",
+    description: "Llamar y confirmar la cita de la próxima semana.",
+    estimatedMinutes: 10,
+    dueDate: toDateInputValue(addDays(now, 2)),
+    dueTime: "10:00",
+    urgency: "critical",
+    assignedBy: "Yisel",
+    assignedTo: "Yorki",
+    status: "pending",
+    recurrence: { type: "none", interval: 1 },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  },
+  {
+    id: "demo-storage",
+    name: "Organizar el estante del almacén",
+    description: "Mover las cajas sueltas y etiquetar los recipientes restantes.",
+    estimatedMinutes: 45,
+    dueDate: toDateInputValue(addDays(now, 4)),
+    urgency: "low",
+    assignedBy: "Yorki",
+    assignedTo: "Yisel",
+    status: "pending",
+    recurrence: { type: "none", interval: 1 },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  },
+];
