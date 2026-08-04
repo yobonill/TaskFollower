@@ -1,19 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  get,
-  onValue,
-  ref,
-  remove,
-  set,
-  type Unsubscribe,
-} from "firebase/database";
+import { get, onValue, ref, remove, set, type Unsubscribe } from "firebase/database";
 import { isFirebaseConfigured } from "../config/firebaseConfig";
-import type { SyncState, Task, UserName } from "../models/task";
+import type {
+  CompletedTaskUndo,
+  SyncState,
+  Task,
+  UserName,
+} from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
-import {
-  ensureAnonymousAuthentication,
-  getFirebaseServices,
-} from "../services/firebase";
+import { ensureAnonymousAuthentication } from "../services/firebase";
 import { getNextDueDate } from "../utils/taskDates";
 
 const CACHE_KEY = "taskFollower.tasks.v1";
@@ -24,14 +19,25 @@ type PendingOperation =
   | { id: string; type: "delete"; taskId: string }
   | { id: string; type: "replace"; tasks: Task[] };
 
+const normalizeTask = (task: Task): Task => ({
+  ...task,
+  description: task.description || "",
+  estimatedMinutes: Math.max(1, Number(task.estimatedMinutes) || 15),
+  urgency: task.urgency || "normal",
+  assignedBy: task.assignedBy || task.assignedTo || "Yorki",
+  assignedTo: task.assignedTo || task.assignedBy || "Yorki",
+  status: task.status || "pending",
+  recurrence: task.recurrence || { type: "none", interval: 1 },
+});
+
 const readCachedTasks = (): Task[] => {
   try {
     const stored = localStorage.getItem(CACHE_KEY);
-    if (stored) return JSON.parse(stored) as Task[];
+    if (stored) return (JSON.parse(stored) as Task[]).map(normalizeTask);
   } catch {
     // Ignore corrupted local cache and fall back to demo data.
   }
-  return createDemoTasks();
+  return createDemoTasks().map(normalizeTask);
 };
 
 const storeCachedTasks = (tasks: Task[]): void => {
@@ -50,14 +56,17 @@ const storePendingOperations = (operations: PendingOperation[]): void => {
   localStorage.setItem(PENDING_KEY, JSON.stringify(operations));
 };
 
+const stripUndefined = <T,>(value: T): T =>
+  JSON.parse(JSON.stringify(value)) as T;
+
 const tasksToRecord = (tasks: Task[]): Record<string, Task> =>
-  Object.fromEntries(tasks.map((task) => [task.id, task]));
+  Object.fromEntries(tasks.map((task) => [task.id, stripUndefined(task)]));
 
 const recordToTasks = (value: unknown): Task[] => {
   if (!value || typeof value !== "object") return [];
-  return Object.values(value as Record<string, Task>).filter(
-    (task): task is Task => Boolean(task?.id && task?.name),
-  );
+  return Object.values(value as Record<string, Task>)
+    .filter((task): task is Task => Boolean(task?.id && task?.name))
+    .map(normalizeTask);
 };
 
 const applyPendingOperations = (
@@ -68,9 +77,9 @@ const applyPendingOperations = (
 
   for (const operation of operations) {
     if (operation.type === "replace") {
-      map = new Map(operation.tasks.map((task) => [task.id, task]));
+      map = new Map(operation.tasks.map((task) => [task.id, normalizeTask(task)]));
     } else if (operation.type === "upsert") {
-      map.set(operation.task.id, operation.task);
+      map.set(operation.task.id, normalizeTask(operation.task));
     } else {
       map.delete(operation.taskId);
     }
@@ -85,7 +94,8 @@ export interface UseTasksResult {
   syncMessage: string;
   pendingCount: number;
   saveTask: (task: Task) => Promise<void>;
-  completeTask: (task: Task, completedBy: UserName) => Promise<void>;
+  completeTask: (task: Task, completedBy: UserName) => Promise<CompletedTaskUndo>;
+  undoComplete: (undo: CompletedTaskUndo) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   replaceTasks: (tasks: Task[]) => Promise<void>;
   mergeTasks: (tasks: Task[]) => Promise<void>;
@@ -106,8 +116,9 @@ export const useTasks = (): UseTasksResult => {
   const mountedRef = useRef(true);
 
   const updateLocalTasks = useCallback((nextTasks: Task[]) => {
-    setTasks(nextTasks);
-    storeCachedTasks(nextTasks);
+    const normalized = nextTasks.map(normalizeTask);
+    setTasks(normalized);
+    storeCachedTasks(normalized);
   }, []);
 
   const queueOperation = useCallback((operation: PendingOperation) => {
@@ -134,7 +145,10 @@ export const useTasks = (): UseTasksResult => {
         const { database } = await ensureAnonymousAuthentication();
 
         if (operation.type === "upsert") {
-          await set(ref(database, `tasks/${operation.task.id}`), operation.task);
+          await set(
+            ref(database, `tasks/${operation.task.id}`),
+            stripUndefined(operation.task),
+          );
         } else if (operation.type === "delete") {
           await remove(ref(database, `tasks/${operation.taskId}`));
         } else {
@@ -147,13 +161,11 @@ export const useTasks = (): UseTasksResult => {
           setSyncMessage("Todos los cambios están sincronizados.");
         }
         return true;
-      } catch (error) {
+      } catch {
         if (mountedRef.current) {
           setSyncState(navigator.onLine ? "error" : "offline");
           setSyncMessage(
-            error instanceof Error
-              ? "Los cambios se guardaron en este dispositivo, pero no pudieron sincronizarse."
-              : "Los cambios se guardaron en este dispositivo, pero no pudieron sincronizarse.",
+            "Los cambios se guardaron en este dispositivo, pero no pudieron sincronizarse.",
           );
         }
         return false;
@@ -190,43 +202,57 @@ export const useTasks = (): UseTasksResult => {
 
   const saveTask = useCallback(
     async (task: Task) => {
+      const normalized = normalizeTask(task);
       const current = readCachedTasks();
-      const exists = current.some((item) => item.id === task.id);
+      const exists = current.some((item) => item.id === normalized.id);
       const next = exists
-        ? current.map((item) => (item.id === task.id ? task : item))
-        : [...current, task];
+        ? current.map((item) => (item.id === normalized.id ? normalized : item))
+        : [...current, normalized];
       updateLocalTasks(next);
-      await submitOperation({ id: crypto.randomUUID(), type: "upsert", task });
+      await submitOperation({
+        id: crypto.randomUUID(),
+        type: "upsert",
+        task: normalized,
+      });
     },
     [submitOperation, updateLocalTasks],
   );
 
   const completeTask = useCallback(
-    async (task: Task, completedBy: UserName) => {
+    async (task: Task, completedBy: UserName): Promise<CompletedTaskUndo> => {
       const timestamp = new Date().toISOString();
+      const originalTask = normalizeTask(task);
       const completedTask: Task = {
-        ...task,
+        ...originalTask,
         status: "done",
         completedAt: timestamp,
         completedBy,
+        cancelledAt: undefined,
+        cancelledBy: undefined,
         updatedAt: timestamp,
       };
       await saveTask(completedTask);
 
-      if (task.recurrence.type !== "none") {
+      let generatedTaskId: string | undefined;
+      if (originalTask.recurrence.type !== "none") {
+        generatedTaskId = crypto.randomUUID();
         const nextTask: Task = {
-          ...task,
-          id: crypto.randomUUID(),
-          dueDate: getNextDueDate(task.dueDate, task.recurrence),
+          ...originalTask,
+          id: generatedTaskId,
+          dueDate: getNextDueDate(originalTask.dueDate, originalTask.recurrence),
           status: "pending",
           completedAt: undefined,
           completedBy: undefined,
-          recurrenceSeriesId: task.recurrenceSeriesId || task.id,
+          cancelledAt: undefined,
+          cancelledBy: undefined,
+          recurrenceSeriesId: originalTask.recurrenceSeriesId || originalTask.id,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
         await saveTask(nextTask);
       }
+
+      return { originalTask, generatedTaskId };
     },
     [saveTask],
   );
@@ -240,13 +266,31 @@ export const useTasks = (): UseTasksResult => {
     [submitOperation, updateLocalTasks],
   );
 
+  const undoComplete = useCallback(
+    async ({ originalTask, generatedTaskId }: CompletedTaskUndo) => {
+      const restoredTask: Task = {
+        ...originalTask,
+        status: "pending",
+        completedAt: undefined,
+        completedBy: undefined,
+        cancelledAt: undefined,
+        cancelledBy: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveTask(restoredTask);
+      if (generatedTaskId) await deleteTask(generatedTaskId);
+    },
+    [deleteTask, saveTask],
+  );
+
   const replaceTasks = useCallback(
     async (nextTasks: Task[]) => {
-      updateLocalTasks(nextTasks);
+      const normalized = nextTasks.map(normalizeTask);
+      updateLocalTasks(normalized);
       await submitOperation({
         id: crypto.randomUUID(),
         type: "replace",
-        tasks: nextTasks,
+        tasks: normalized,
       });
     },
     [submitOperation, updateLocalTasks],
@@ -255,7 +299,7 @@ export const useTasks = (): UseTasksResult => {
   const mergeTasks = useCallback(
     async (importedTasks: Task[]) => {
       const map = new Map(readCachedTasks().map((task) => [task.id, task]));
-      importedTasks.forEach((task) => map.set(task.id, task));
+      importedTasks.forEach((task) => map.set(task.id, normalizeTask(task)));
       await replaceTasks([...map.values()]);
     },
     [replaceTasks],
@@ -279,7 +323,9 @@ export const useTasks = (): UseTasksResult => {
           const connected = snapshot.val() === true;
           if (!connected) {
             setSyncState("offline");
-            setSyncMessage("Sin conexión: los cambios permanecerán guardados en este dispositivo.");
+            setSyncMessage(
+              "Sin conexión: los cambios permanecerán guardados en este dispositivo.",
+            );
           } else {
             void retrySync();
           }
@@ -300,21 +346,18 @@ export const useTasks = (): UseTasksResult => {
               setSyncMessage("Todos los cambios están sincronizados.");
             }
           },
-          (error) => {
+          () => {
             if (!mountedRef.current) return;
             setSyncState("error");
             setSyncMessage("No se pudieron cargar las tareas compartidas.");
           },
         );
 
-        // Trigger one read early so permission/config errors surface quickly.
         await get(ref(database, "tasks"));
-      } catch (error) {
+      } catch {
         if (!mountedRef.current) return;
         setSyncState("error");
-        setSyncMessage(
-          "No se pudo conectar con Firebase.",
-        );
+        setSyncMessage("No se pudo conectar con Firebase.");
       }
     };
 
@@ -334,6 +377,7 @@ export const useTasks = (): UseTasksResult => {
     pendingCount,
     saveTask,
     completeTask,
+    undoComplete,
     deleteTask,
     replaceTasks,
     mergeTasks,

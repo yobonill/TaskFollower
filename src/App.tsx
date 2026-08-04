@@ -1,6 +1,13 @@
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { TaskCard } from "./components/TaskCard";
 import { TaskForm } from "./components/TaskForm";
+import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useTasks } from "./hooks/useTasks";
 import {
   USERS,
@@ -24,6 +31,12 @@ const APP_LOCALE = "es-DO";
 
 type View = "dashboard" | "manage";
 type ImportMode = "merge" | "replace";
+
+interface ToastState {
+  message: string;
+  actionLabel?: string;
+  action?: () => void | Promise<void>;
+}
 
 const urgencyLabels: Record<TaskUrgency, string> = {
   low: "Baja",
@@ -55,11 +68,13 @@ function App() {
     pendingCount,
     saveTask,
     completeTask,
+    undoComplete,
     deleteTask,
     replaceTasks,
     mergeTasks,
     retrySync,
   } = useTasks();
+  const { canInstall, install } = usePwaInstall();
 
   const [selectedUser, setSelectedUser] = useState<UserFilter>(readSelectedUser);
   const [view, setView] = useState<View>("dashboard");
@@ -67,12 +82,22 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(false);
   const [importMode, setImportMode] = useState<ImportMode>("merge");
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [installBannerHidden, setInstallBannerHidden] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const activeUser: UserName = selectedUser === "all" ? "Yorki" : selectedUser;
   const completionUserFor = (task: Task): UserName =>
     selectedUser === "all" ? task.assignedTo : selectedUser;
+
+  const showToast = useCallback((nextToast: ToastState, duration = 9000) => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToast(nextToast);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), duration);
+  }, []);
 
   const filteredTasks = useMemo(
     () =>
@@ -99,6 +124,18 @@ function App() {
     [filteredTasks],
   );
 
+  const cancelledTasks = useMemo(
+    () =>
+      filteredTasks
+        .filter((task) => task.status === "cancelled")
+        .sort(
+          (a, b) =>
+            new Date(b.cancelledAt || b.updatedAt).getTime() -
+            new Date(a.cancelledAt || a.updatedAt).getTime(),
+        ),
+    [filteredTasks],
+  );
+
   const overdueCount = pendingTasks.filter(isTaskOverdue).length;
   const dueTodayCount = pendingTasks.filter(isTaskDueToday).length;
 
@@ -110,6 +147,7 @@ function App() {
   const openCreateForm = () => {
     setEditingTask(null);
     setShowForm(true);
+    setMenuOpen(false);
   };
 
   const openEditForm = (task: Task) => {
@@ -122,14 +160,134 @@ function App() {
     setShowForm(false);
   };
 
-  const handleSave = async (task: Task) => {
+  const handleSave = async (task: Task, createAnother: boolean) => {
+    const wasEditing = Boolean(editingTask);
     await saveTask(task);
-    closeForm();
+    showToast({ message: wasEditing ? "Cambios guardados." : "Tarea guardada." }, 3200);
+    if (!createAnother) closeForm();
+  };
+
+  const handleComplete = async (task: Task, completedBy: UserName) => {
+    const undo = await completeTask(task, completedBy);
+    showToast({
+      message: "Tarea completada.",
+      actionLabel: "Deshacer",
+      action: async () => {
+        await undoComplete(undo);
+        showToast({ message: "La tarea volvió a estar pendiente." }, 3200);
+      },
+    });
+  };
+
+  const handleDuplicate = async (task: Task) => {
+    const timestamp = new Date().toISOString();
+    const duplicate: Task = {
+      ...task,
+      id: crypto.randomUUID(),
+      status: "pending",
+      completedAt: undefined,
+      completedBy: undefined,
+      cancelledAt: undefined,
+      cancelledBy: undefined,
+      recurrenceSeriesId:
+        task.recurrence.type === "none" ? undefined : crypto.randomUUID(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await saveTask(duplicate);
+    showToast({ message: "Tarea duplicada." }, 3200);
+  };
+
+  const handleReassign = async (task: Task, assignedTo: UserName) => {
+    await saveTask({
+      ...task,
+      assignedTo,
+      updatedAt: new Date().toISOString(),
+    });
+    showToast({ message: `Tarea asignada a ${assignedTo}.` }, 3200);
+  };
+
+  const handlePostpone = async (task: Task, dueDate: string) => {
+    await saveTask({
+      ...task,
+      dueDate,
+      status: "pending",
+      cancelledAt: undefined,
+      cancelledBy: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    showToast({ message: "Fecha límite actualizada." }, 3200);
+  };
+
+  const handleCancelTask = async (task: Task) => {
+    if (!window.confirm(`¿Cancelar la tarea “${task.name}”?`)) return;
+    const original = task;
+    await saveTask({
+      ...task,
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+      cancelledBy: completionUserFor(task),
+      updatedAt: new Date().toISOString(),
+    });
+    showToast({
+      message: "Tarea cancelada.",
+      actionLabel: "Deshacer",
+      action: async () => {
+        await saveTask({
+          ...original,
+          status: "pending",
+          cancelledAt: undefined,
+          cancelledBy: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+        showToast({ message: "La tarea fue restaurada." }, 3200);
+      },
+    });
+  };
+
+  const handleRestoreCancelled = async (task: Task) => {
+    await saveTask({
+      ...task,
+      status: "pending",
+      cancelledAt: undefined,
+      cancelledBy: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    showToast({ message: "Tarea restaurada." }, 3200);
   };
 
   const handleDelete = async (task: Task) => {
-    if (!window.confirm(`¿Eliminar la tarea “${task.name}”?`)) return;
+    if (!window.confirm(`¿Eliminar permanentemente la tarea “${task.name}”?`)) return;
     await deleteTask(task.id);
+    showToast({ message: "Tarea eliminada." }, 3200);
+  };
+
+  const handleInstall = async () => {
+    const result = await install();
+    if (result === "accepted" || result === "already-installed") {
+      setInstallBannerHidden(true);
+      showToast({ message: "TaskFollower está instalado." }, 3500);
+      return;
+    }
+    if (result === "ios-instructions") {
+      showToast(
+        {
+          message:
+            "En iPhone o iPad: abre Compartir y selecciona “Añadir a pantalla de inicio”.",
+        },
+        12000,
+      );
+      return;
+    }
+    if (result === "browser-instructions") {
+      showToast(
+        {
+          message:
+            "Abre el menú del navegador y selecciona “Instalar aplicación” o “Añadir a pantalla de inicio”.",
+        },
+        12000,
+      );
+    }
   };
 
   const handleExport = () => {
@@ -172,7 +330,8 @@ function App() {
         return;
       }
 
-      const quantityText = importedTasks.length === 1 ? "1 tarea" : `${importedTasks.length} tareas`;
+      const quantityText =
+        importedTasks.length === 1 ? "1 tarea" : `${importedTasks.length} tareas`;
       const action =
         importMode === "replace"
           ? "reemplazar todas las tareas actuales"
@@ -182,6 +341,7 @@ function App() {
 
       if (importMode === "replace") await replaceTasks(importedTasks);
       else await mergeTasks(importedTasks);
+      showToast({ message: "Importación completada." }, 3500);
     } catch {
       window.alert("El archivo seleccionado no contiene JSON válido.");
     }
@@ -192,8 +352,40 @@ function App() {
     setMenuOpen(false);
   };
 
+  const runToastAction = async () => {
+    const action = toast?.action;
+    setToast(null);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    await action?.();
+  };
+
   return (
     <div className={`app-shell ${menuOpen ? "menu-open" : "menu-collapsed"}`}>
+      <header className="mobile-header">
+        <button
+          className="mobile-menu-button"
+          type="button"
+          aria-label="Abrir menú"
+          onClick={() => setMenuOpen(true)}
+        >
+          ☰
+        </button>
+        <button className="mobile-brand" type="button" onClick={() => changeView("dashboard")}>
+          <span className="mobile-brand-mark">✓</span>
+          <span>TaskFollower</span>
+        </button>
+        <select
+          aria-label="Mostrar tareas de"
+          value={selectedUser}
+          onChange={(event) => changeSelectedUser(event.target.value as UserFilter)}
+        >
+          <option value="all">Todos</option>
+          {USERS.map((user) => (
+            <option key={user} value={user}>{user}</option>
+          ))}
+        </select>
+      </header>
+
       <aside className="sidebar" aria-label="Menú principal">
         <div className="sidebar-header">
           <button
@@ -247,14 +439,24 @@ function App() {
             <span className="sidebar-icon">＋</span>
             <span className="sidebar-label">Nueva tarea</span>
           </button>
+
+          {canInstall && (
+            <button
+              className="sidebar-item"
+              type="button"
+              title="Instalar TaskFollower"
+              onClick={() => void handleInstall()}
+            >
+              <span className="sidebar-icon">⇩</span>
+              <span className="sidebar-label">Instalar aplicación</span>
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-spacer" />
 
         <div className="sidebar-user">
-          <label htmlFor="selected-user" className="sidebar-label">
-            Mostrar tareas de
-          </label>
+          <label htmlFor="selected-user" className="sidebar-label">Mostrar tareas de</label>
           <select
             id="selected-user"
             value={selectedUser}
@@ -263,9 +465,7 @@ function App() {
           >
             <option value="all">Todos</option>
             {USERS.map((user) => (
-              <option key={user} value={user}>
-                {user}
-              </option>
+              <option key={user} value={user}>{user}</option>
             ))}
           </select>
           <span className="sidebar-user-short" aria-hidden="true">
@@ -304,12 +504,7 @@ function App() {
         {view === "dashboard" ? (
           <section className="dashboard-section">
             <header className="dashboard-toolbar">
-              <div>
-                <span className="eyebrow">Panel de tareas</span>
-                <h1>
-                  {selectedUser === "all" ? "Todas las tareas" : `Tareas de ${selectedUser}`}
-                </h1>
-              </div>
+              <h1>{selectedUser === "all" ? "Tareas" : `Tareas de ${selectedUser}`}</h1>
 
               <div className="summary-strip" aria-label="Resumen de tareas">
                 <div className={overdueCount ? "summary-danger" : ""}>
@@ -335,8 +530,13 @@ function App() {
                     featured={index === 0}
                     task={task}
                     activeUser={completionUserFor(task)}
-                    onComplete={(item, user) => void completeTask(item, user)}
+                    onComplete={(item, user) => void handleComplete(item, user)}
                     onEdit={openEditForm}
+                    onDuplicate={(item) => void handleDuplicate(item)}
+                    onReassign={(item, user) => void handleReassign(item, user)}
+                    onPostpone={(item, dueDate) => void handlePostpone(item, dueDate)}
+                    onCancelTask={(item) => void handleCancelTask(item)}
+                    onDelete={(item) => void handleDelete(item)}
                   />
                 ))}
               </div>
@@ -365,9 +565,7 @@ function App() {
             </div>
 
             <div className="data-actions">
-              <button className="button button-secondary" onClick={handleExport}>
-                Exportar JSON
-              </button>
+              <button className="button button-secondary" onClick={handleExport}>Exportar JSON</button>
               <button className="button button-secondary" onClick={() => requestImport("merge")}>
                 Importar y combinar
               </button>
@@ -405,9 +603,10 @@ function App() {
                       </span>
                       <div className="row-actions">
                         <button onClick={() => openEditForm(task)}>Editar</button>
-                        <button onClick={() => void completeTask(task, completionUserFor(task))}>
+                        <button onClick={() => void handleComplete(task, completionUserFor(task))}>
                           Completar
                         </button>
+                        <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
                         <button className="danger-action" onClick={() => void handleDelete(task)}>
                           Eliminar
                         </button>
@@ -449,6 +648,7 @@ function App() {
                         </div>
                         <div className="row-actions">
                           <button onClick={() => openEditForm(task)}>Editar</button>
+                          <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
                           <button className="danger-action" onClick={() => void handleDelete(task)}>
                             Eliminar
                           </button>
@@ -461,9 +661,87 @@ function App() {
                 </div>
               )}
             </div>
+
+            <div className="task-list-panel completed-panel">
+              <button className="completed-toggle" onClick={() => setShowCancelled(!showCancelled)}>
+                <span>
+                  <strong>Tareas canceladas</strong>
+                  <small>{cancelledTasks.length} en esta vista</small>
+                </span>
+                <span>{showCancelled ? "−" : "+"}</span>
+              </button>
+
+              {showCancelled && (
+                <div className="management-list">
+                  {cancelledTasks.length ? (
+                    cancelledTasks.map((task) => (
+                      <article className="management-row cancelled-row" key={task.id}>
+                        <span className="cancelled-mark">×</span>
+                        <div className="management-main">
+                          <strong>{task.name}</strong>
+                          <span>Cancelada por {task.cancelledBy || task.assignedTo}</span>
+                        </div>
+                        <div className="row-actions">
+                          <button onClick={() => void handleRestoreCancelled(task)}>Restaurar</button>
+                          <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                          <button className="danger-action" onClick={() => void handleDelete(task)}>
+                            Eliminar
+                          </button>
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <p className="list-empty">No hay tareas canceladas.</p>
+                  )}
+                </div>
+              )}
+            </div>
           </section>
         )}
       </main>
+
+      <button
+        className="floating-add-button"
+        type="button"
+        aria-label="Crear nueva tarea"
+        onClick={openCreateForm}
+      >
+        +
+      </button>
+
+      {canInstall && !installBannerHidden && (
+        <aside className="install-banner" aria-label="Instalar TaskFollower">
+          <div>
+            <strong>Instala TaskFollower</strong>
+            <span>Ábrelo como una aplicación desde tu pantalla de inicio.</span>
+          </div>
+          <button className="button button-primary" type="button" onClick={() => void handleInstall()}>
+            Instalar
+          </button>
+          <button
+            className="install-close"
+            type="button"
+            aria-label="Cerrar aviso de instalación"
+            onClick={() => setInstallBannerHidden(true)}
+          >
+            ×
+          </button>
+        </aside>
+      )}
+
+      {toast && (
+        <div className="toast" role="status" aria-live="polite">
+          <span>{toast.message}</span>
+          {toast.actionLabel && (
+            <button type="button" onClick={() => void runToastAction()}>
+              {toast.actionLabel}
+            </button>
+          )}
+          <button className="toast-close" type="button" aria-label="Cerrar mensaje" onClick={() => setToast(null)}>
+            ×
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <div className="modal-backdrop" role="presentation" onMouseDown={closeForm}>
@@ -471,6 +749,7 @@ function App() {
             className="modal-panel"
             role="dialog"
             aria-modal="true"
+            aria-label={editingTask ? "Editar tarea" : "Nueva tarea"}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <TaskForm

@@ -3,7 +3,7 @@ export type UserName = (typeof USERS)[number];
 export type UserFilter = "all" | UserName;
 
 export type TaskUrgency = "low" | "normal" | "high" | "critical";
-export type TaskStatus = "pending" | "done";
+export type TaskStatus = "pending" | "done" | "cancelled";
 export type RecurrenceType = "none" | "daily" | "weekly" | "monthly";
 
 export interface TaskRecurrence {
@@ -28,12 +28,19 @@ export interface Task {
   updatedAt: string;
   completedAt?: string;
   completedBy?: UserName;
+  cancelledAt?: string;
+  cancelledBy?: UserName;
 }
 
 export interface TaskExport {
   schemaVersion: 1;
   exportedAt: string;
   tasks: Task[];
+}
+
+export interface CompletedTaskUndo {
+  originalTask: Task;
+  generatedTaskId?: string;
 }
 
 export type SyncState =
