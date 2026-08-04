@@ -140,6 +140,7 @@ export const useTasks = (): UseTasksResult => {
   );
   const [pendingCount, setPendingCount] = useState(readPendingOperations().length);
   const mountedRef = useRef(true);
+  const firebaseConnectedRef = useRef(false);
 
   const updateLocalTasks = useCallback((nextTasks: Task[]) => {
     const normalized = nextTasks.map(normalizeTask);
@@ -163,7 +164,13 @@ export const useTasks = (): UseTasksResult => {
 
   const executeOperation = useCallback(
     async (operation: PendingOperation): Promise<boolean> => {
-      if (!isFirebaseConfigured()) return false;
+      if (
+        !isFirebaseConfigured() ||
+        !navigator.onLine ||
+        !firebaseConnectedRef.current
+      ) {
+        return false;
+      }
 
       try {
         setSyncState("saving");
@@ -202,13 +209,28 @@ export const useTasks = (): UseTasksResult => {
 
   const retrySync = useCallback(async () => {
     const operations = readPendingOperations();
-    if (!operations.length) {
-      setSyncState(isFirebaseConfigured() ? "synced" : "local");
+
+    if (!isFirebaseConfigured()) {
+      setSyncState("local");
       setSyncMessage(
-        isFirebaseConfigured()
-          ? "Todos los cambios están sincronizados."
-          : "Vista local: agrega la configuración de Firebase para sincronizar los dispositivos.",
+        "Vista local: agrega la configuración de Firebase para sincronizar los dispositivos.",
       );
+      return;
+    }
+
+    if (!navigator.onLine || !firebaseConnectedRef.current) {
+      setSyncState("offline");
+      setSyncMessage(
+        operations.length
+          ? "Sin conexión: los cambios están guardados en este dispositivo y se sincronizarán después."
+          : "Sin conexión: las tareas disponibles están guardadas en este dispositivo.",
+      );
+      return;
+    }
+
+    if (!operations.length) {
+      setSyncState("synced");
+      setSyncMessage("Todos los cambios están sincronizados.");
       return;
     }
 
@@ -219,9 +241,25 @@ export const useTasks = (): UseTasksResult => {
   }, [executeOperation]);
 
   const submitOperation = useCallback(
-    async (operation: PendingOperation) => {
+    (operation: PendingOperation) => {
+      // Saving to the local cache and pending queue is the completion point for
+      // the UI. Firebase synchronization runs in the background so an offline
+      // write can never leave a form stuck on “Guardando…”.
       queueOperation(operation);
-      await executeOperation(operation);
+
+      if (!isFirebaseConfigured()) return;
+
+      if (!navigator.onLine || !firebaseConnectedRef.current) {
+        if (mountedRef.current) {
+          setSyncState("offline");
+          setSyncMessage(
+            "Cambio guardado en este dispositivo. Se sincronizará cuando vuelva la conexión.",
+          );
+        }
+        return;
+      }
+
+      void executeOperation(operation);
     },
     [executeOperation, queueOperation],
   );
@@ -235,7 +273,7 @@ export const useTasks = (): UseTasksResult => {
         ? current.map((item) => (item.id === normalized.id ? normalized : item))
         : [...current, normalized];
       updateLocalTasks(next);
-      await submitOperation({
+      submitOperation({
         id: crypto.randomUUID(),
         type: "upsert",
         task: normalized,
@@ -287,7 +325,7 @@ export const useTasks = (): UseTasksResult => {
     async (taskId: string) => {
       const next = readCachedTasks().filter((task) => task.id !== taskId);
       updateLocalTasks(next);
-      await submitOperation({ id: crypto.randomUUID(), type: "delete", taskId });
+      submitOperation({ id: crypto.randomUUID(), type: "delete", taskId });
     },
     [submitOperation, updateLocalTasks],
   );
@@ -313,7 +351,7 @@ export const useTasks = (): UseTasksResult => {
     async (nextTasks: Task[]) => {
       const normalized = nextTasks.map(normalizeTask);
       updateLocalTasks(normalized);
-      await submitOperation({
+      submitOperation({
         id: crypto.randomUUID(),
         type: "replace",
         tasks: normalized,
@@ -347,6 +385,7 @@ export const useTasks = (): UseTasksResult => {
         unsubscribeConnection = onValue(ref(database, ".info/connected"), (snapshot) => {
           if (!mountedRef.current) return;
           const connected = snapshot.val() === true;
+          firebaseConnectedRef.current = connected;
           if (!connected) {
             setSyncState("offline");
             setSyncMessage(
@@ -381,6 +420,7 @@ export const useTasks = (): UseTasksResult => {
 
         await get(ref(database, "tasks"));
       } catch {
+        firebaseConnectedRef.current = false;
         if (!mountedRef.current) return;
         setSyncState("error");
         setSyncMessage("No se pudo conectar con Firebase.");
@@ -391,6 +431,7 @@ export const useTasks = (): UseTasksResult => {
 
     return () => {
       mountedRef.current = false;
+      firebaseConnectedRef.current = false;
       unsubscribeTasks?.();
       unsubscribeConnection?.();
     };
