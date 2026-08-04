@@ -10,6 +10,7 @@ import type { FirebaseOptions } from "firebase/app";
 const firebaseConfig = {
   apiKey: "AIzaSyABQsP0Cglpb9mV0mezqfYHKvpuNEcM4dU",
   authDomain: "app-taskfollower.firebaseapp.com",
+  databaseURL: "https://app-taskfollower-default-rtdb.firebaseio.com/",
   projectId: "app-taskfollower",
   storageBucket: "app-taskfollower.firebasestorage.app",
   messagingSenderId: "71859963691",
