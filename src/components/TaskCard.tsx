@@ -44,6 +44,7 @@ export function TaskCard({
       className={`task-card urgency-${task.urgency} ${featured ? "task-card-featured" : ""}`}
     >
       <div className="task-card-topline">
+        {featured && <span className="next-label">Siguiente</span>}
         <span className="urgency-label">{urgencyLabels[task.urgency]}</span>
         {overdue && <span className="overdue-label">Vencida</span>}
         {task.recurrence.type !== "none" && (
@@ -67,12 +68,6 @@ export function TaskCard({
           <span>Asignada a</span>
           <strong>{task.assignedTo}</strong>
         </div>
-        {featured && (
-          <div>
-            <span>Asignada por</span>
-            <strong>{task.assignedBy}</strong>
-          </div>
-        )}
       </div>
 
       <div className="task-actions">

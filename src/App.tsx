@@ -63,6 +63,7 @@ function App() {
 
   const [selectedUser, setSelectedUser] = useState<UserFilter>(readSelectedUser);
   const [view, setView] = useState<View>("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
@@ -98,8 +99,6 @@ function App() {
     [filteredTasks],
   );
 
-  const nextTask = pendingTasks[0];
-  const upcomingTasks = pendingTasks.slice(1, 7);
   const overdueCount = pendingTasks.filter(isTaskOverdue).length;
   const dueTodayCount = pendingTasks.filter(isTaskDueToday).length;
 
@@ -188,69 +187,131 @@ function App() {
     }
   };
 
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <button className="brand" onClick={() => setView("dashboard")}>
-          <span className="brand-mark">✓</span>
-          <span>
-            <strong>TaskFollower</strong>
-            <small>Ten claro qué sigue.</small>
-          </span>
-        </button>
+  const changeView = (nextView: View) => {
+    setView(nextView);
+    setMenuOpen(false);
+  };
 
-        <div className="topbar-actions">
-          <label className="user-picker">
-            <span>Mostrar</span>
-            <select
-              value={selectedUser}
-              onChange={(event) => changeSelectedUser(event.target.value as UserFilter)}
-            >
-              <option value="all">Todas las tareas</option>
-              {USERS.map((user) => (
-                <option key={user} value={user}>
-                  {user}
-                </option>
-              ))}
-            </select>
-          </label>
+  return (
+    <div className={`app-shell ${menuOpen ? "menu-open" : "menu-collapsed"}`}>
+      <aside className="sidebar" aria-label="Menú principal">
+        <div className="sidebar-header">
+          <button
+            className="sidebar-brand"
+            type="button"
+            title="Ir al panel"
+            onClick={() => changeView("dashboard")}
+          >
+            <span className="brand-mark">✓</span>
+            <span className="sidebar-label brand-name">TaskFollower</span>
+          </button>
 
           <button
-            className={`button ${view === "manage" ? "button-primary" : "button-quiet"}`}
-            onClick={() => setView(view === "dashboard" ? "manage" : "dashboard")}
+            className="sidebar-toggle"
+            type="button"
+            aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
           >
-            {view === "dashboard" ? "⚙ Gestionar" : "← Panel"}
+            {menuOpen ? "‹" : "☰"}
           </button>
         </div>
-      </header>
 
-      <div className={`sync-bar sync-${syncState}`}>
-        <span className="sync-dot" />
-        <span>{syncMessage}</span>
-        {pendingCount > 0 && (
-          <strong>
-            {pendingCount === 1 ? "1 cambio pendiente" : `${pendingCount} cambios pendientes`}
-          </strong>
-        )}
-        {(syncState === "error" || syncState === "offline") && (
-          <button onClick={() => void retrySync()}>Reintentar</button>
-        )}
-      </div>
+        <nav className="sidebar-nav">
+          <button
+            className={`sidebar-item ${view === "dashboard" ? "sidebar-item-active" : ""}`}
+            type="button"
+            title="Panel de tareas"
+            onClick={() => changeView("dashboard")}
+          >
+            <span className="sidebar-icon">⌂</span>
+            <span className="sidebar-label">Tareas</span>
+          </button>
+
+          <button
+            className={`sidebar-item ${view === "manage" ? "sidebar-item-active" : ""}`}
+            type="button"
+            title="Gestionar tareas"
+            onClick={() => changeView("manage")}
+          >
+            <span className="sidebar-icon">⚙</span>
+            <span className="sidebar-label">Gestionar</span>
+          </button>
+
+          <button
+            className="sidebar-item sidebar-item-primary"
+            type="button"
+            title="Crear nueva tarea"
+            onClick={openCreateForm}
+          >
+            <span className="sidebar-icon">＋</span>
+            <span className="sidebar-label">Nueva tarea</span>
+          </button>
+        </nav>
+
+        <div className="sidebar-spacer" />
+
+        <div className="sidebar-user">
+          <label htmlFor="selected-user" className="sidebar-label">
+            Mostrar tareas de
+          </label>
+          <select
+            id="selected-user"
+            value={selectedUser}
+            onChange={(event) => changeSelectedUser(event.target.value as UserFilter)}
+            title="Seleccionar usuario"
+          >
+            <option value="all">Todos</option>
+            {USERS.map((user) => (
+              <option key={user} value={user}>
+                {user}
+              </option>
+            ))}
+          </select>
+          <span className="sidebar-user-short" aria-hidden="true">
+            {selectedUser === "all" ? "T" : selectedUser.charAt(0)}
+          </span>
+        </div>
+
+        <div className={`sidebar-sync sync-${syncState}`} title={syncMessage}>
+          <span className="sync-dot" />
+          <div className="sidebar-label sidebar-sync-text">
+            <span>{syncMessage}</span>
+            {pendingCount > 0 && (
+              <strong>
+                {pendingCount === 1 ? "1 cambio pendiente" : `${pendingCount} cambios pendientes`}
+              </strong>
+            )}
+          </div>
+          {(syncState === "error" || syncState === "offline") && (
+            <button className="sidebar-label" type="button" onClick={() => void retrySync()}>
+              Reintentar
+            </button>
+          )}
+        </div>
+      </aside>
+
+      {menuOpen && (
+        <button
+          className="sidebar-backdrop"
+          type="button"
+          aria-label="Cerrar menú"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
 
       <main className="main-content">
         {view === "dashboard" ? (
-          <>
-            <section className="dashboard-heading">
+          <section className="dashboard-section">
+            <header className="dashboard-toolbar">
               <div>
-                <span className="eyebrow">Enfoque de hoy</span>
+                <span className="eyebrow">Panel de tareas</span>
                 <h1>
-                  {selectedUser === "all"
-                    ? "¿Qué necesitas completar ahora?"
-                    : `Próximas tareas de ${selectedUser}`}
+                  {selectedUser === "all" ? "Todas las tareas" : `Tareas de ${selectedUser}`}
                 </h1>
               </div>
 
-              <div className="summary-strip">
+              <div className="summary-strip" aria-label="Resumen de tareas">
                 <div className={overdueCount ? "summary-danger" : ""}>
                   <strong>{overdueCount}</strong>
                   <span>Vencidas</span>
@@ -264,24 +325,21 @@ function App() {
                   <span>Pendientes</span>
                 </div>
               </div>
-            </section>
+            </header>
 
-            {nextTask ? (
-              <section className="next-task-section">
-                <div className="section-title-row">
-                  <div>
-                    <span className="eyebrow">Próxima tarea</span>
-                    <h2>Empieza por aquí</h2>
-                  </div>
-                </div>
-                <TaskCard
-                  featured
-                  task={nextTask}
-                  activeUser={completionUserFor(nextTask)}
-                  onComplete={(task, user) => void completeTask(task, user)}
-                  onEdit={openEditForm}
-                />
-              </section>
+            {pendingTasks.length ? (
+              <div className="task-grid task-grid-dashboard">
+                {pendingTasks.map((task, index) => (
+                  <TaskCard
+                    key={task.id}
+                    featured={index === 0}
+                    task={task}
+                    activeUser={completionUserFor(task)}
+                    onComplete={(item, user) => void completeTask(item, user)}
+                    onEdit={openEditForm}
+                  />
+                ))}
+              </div>
             ) : (
               <section className="empty-state">
                 <span className="empty-icon">✓</span>
@@ -292,33 +350,7 @@ function App() {
                 </button>
               </section>
             )}
-
-            {upcomingTasks.length > 0 && (
-              <section className="upcoming-section">
-                <div className="section-title-row">
-                  <div>
-                    <span className="eyebrow">Después</span>
-                    <h2>Próximas tareas</h2>
-                  </div>
-                  <button className="text-button" onClick={() => setView("manage")}>
-                    Ver las {pendingTasks.length}
-                  </button>
-                </div>
-
-                <div className="task-grid">
-                  {upcomingTasks.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      activeUser={completionUserFor(task)}
-                      onComplete={(item, user) => void completeTask(item, user)}
-                      onEdit={openEditForm}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
-          </>
+          </section>
         ) : (
           <section className="manage-section">
             <div className="manage-heading">
