@@ -7,7 +7,7 @@ import type { FirebaseOptions } from "firebase/app";
  * Firebase's web config is client-side configuration, not a private server secret.
  * Data access is controlled by Realtime Database Security Rules.
  */
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyABQsP0Cglpb9mV0mezqfYHKvpuNEcM4dU",
   authDomain: "app-taskfollower.firebaseapp.com",
   databaseURL: "https://app-taskfollower-default-rtdb.firebaseio.com/",
