@@ -1,4 +1,4 @@
-import type { Task, TaskRecurrence, TaskUrgency } from "../models/task";
+import type { Task, TaskPriority, TaskRecurrence } from "../models/task";
 
 const APP_LOCALE = "es-DO";
 
@@ -15,26 +15,32 @@ export const addDays = (date: Date, days: number): Date => {
   return next;
 };
 
-export const getTaskDate = (task: Pick<Task, "dueDate" | "dueTime">): Date => {
+export const getTaskDate = (
+  task: Pick<Task, "dueDate" | "dueTime">,
+): Date | null => {
+  if (!task.dueDate) return null;
   const time = task.dueTime || "23:59";
-  return new Date(`${task.dueDate}T${time}:00`);
+  const date = new Date(`${task.dueDate}T${time}:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 };
 
-export const isTaskOverdue = (task: Task): boolean =>
-  task.status === "pending" && getTaskDate(task).getTime() < Date.now();
+export const isTaskOverdue = (task: Task): boolean => {
+  const due = getTaskDate(task);
+  return task.status === "pending" && Boolean(due && due.getTime() < Date.now());
+};
 
 export const isTaskDueToday = (task: Task): boolean => {
   const due = getTaskDate(task);
+  if (!due || task.status !== "pending") return false;
   const today = new Date();
   return (
-    task.status === "pending" &&
     due.getFullYear() === today.getFullYear() &&
     due.getMonth() === today.getMonth() &&
     due.getDate() === today.getDate()
   );
 };
 
-const urgencyWeight: Record<TaskUrgency, number> = {
+const priorityWeight: Record<TaskPriority, number> = {
   critical: 4,
   high: 3,
   normal: 2,
@@ -46,17 +52,23 @@ export const sortPendingTasks = (tasks: Task[]): Task[] =>
     const overdueDifference = Number(isTaskOverdue(b)) - Number(isTaskOverdue(a));
     if (overdueDifference !== 0) return overdueDifference;
 
-    const dateDifference = getTaskDate(a).getTime() - getTaskDate(b).getTime();
+    const aDate = getTaskDate(a)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bDate = getTaskDate(b)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const dateDifference = aDate - bDate;
     if (dateDifference !== 0) return dateDifference;
 
-    const urgencyDifference = urgencyWeight[b.urgency] - urgencyWeight[a.urgency];
-    if (urgencyDifference !== 0) return urgencyDifference;
+    const aPriority = a.priority ? priorityWeight[a.priority] : 0;
+    const bPriority = b.priority ? priorityWeight[b.priority] : 0;
+    const priorityDifference = bPriority - aPriority;
+    if (priorityDifference !== 0) return priorityDifference;
 
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
 
 export const formatDueDate = (task: Task): string => {
   const due = getTaskDate(task);
+  if (!due) return "Sin fecha límite";
+
   const now = new Date();
   const tomorrow = addDays(now, 1);
   const sameDay = (left: Date, right: Date) =>

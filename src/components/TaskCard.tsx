@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Task, UserName } from "../models/task";
+import type { Task, TaskPriority, UserName } from "../models/task";
 import {
   formatDueDate,
   formatDuration,
@@ -20,7 +20,7 @@ interface TaskCardProps {
   activeUser: UserName;
 }
 
-const urgencyLabels = {
+const priorityLabels: Record<TaskPriority, string> = {
   low: "Baja",
   normal: "Normal",
   high: "Alta",
@@ -56,9 +56,10 @@ export function TaskCard({
   activeUser,
 }: TaskCardProps) {
   const overdue = isTaskOverdue(task);
+  const priority = task.priority || "normal";
   const [menuOpen, setMenuOpen] = useState(false);
   const [showPostpone, setShowPostpone] = useState(false);
-  const [customDate, setCustomDate] = useState(task.dueDate);
+  const [customDate, setCustomDate] = useState(task.dueDate || "");
   const menuRef = useRef<HTMLDivElement>(null);
   const otherUser: UserName = task.assignedTo === "Yorki" ? "Yisel" : "Yorki";
 
@@ -82,12 +83,12 @@ export function TaskCard({
 
   return (
     <article
-      className={`task-card urgency-${task.urgency} ${featured ? "task-card-featured" : ""}`}
+      className={`task-card priority-${priority} ${featured ? "task-card-featured" : ""}`}
     >
       <div className="task-card-header">
         <div className="task-card-topline">
           {featured && <span className="next-label">Siguiente</span>}
-          <span className="urgency-label">{urgencyLabels[task.urgency]}</span>
+          <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
           {overdue && <span className="overdue-label">Vencida</span>}
           {task.recurrence.type !== "none" && (
             <span className="recurrence-label">↻ {formatRecurrence(task)}</span>

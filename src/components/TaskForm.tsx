@@ -9,9 +9,13 @@ import {
   USERS,
   type RecurrenceType,
   type Task,
-  type TaskUrgency,
+  type TaskPriority,
   type UserName,
 } from "../models/task";
+import {
+  formatMissingRequiredFields,
+  getMissingRequiredFields,
+} from "../utils/taskCompleteness";
 import { toDateInputValue } from "../utils/taskDates";
 
 interface TaskFormProps {
@@ -27,7 +31,7 @@ interface FormState {
   estimatedMinutes: string;
   dueDate: string;
   dueTime: string;
-  urgency: TaskUrgency;
+  priority: TaskPriority | "";
   assignedBy: UserName;
   assignedTo: UserName;
   recurrenceType: RecurrenceType;
@@ -36,7 +40,6 @@ interface FormState {
 
 interface SavedDefaults {
   estimatedMinutes?: string;
-  urgency?: TaskUrgency;
   assignedTo?: UserName;
 }
 
@@ -46,11 +49,11 @@ interface TaskTemplate {
   name: string;
   description?: string;
   estimatedMinutes: number;
-  urgency: TaskUrgency;
+  priority: TaskPriority;
 }
 
-const DRAFT_KEY = "taskFollower.taskDraft.v2";
-const DEFAULTS_KEY = "taskFollower.taskFormDefaults.v1";
+const DRAFT_KEY = "taskFollower.taskDraft.v3";
+const DEFAULTS_KEY = "taskFollower.taskFormDefaults.v2";
 
 const templates: TaskTemplate[] = [
   {
@@ -58,35 +61,35 @@ const templates: TaskTemplate[] = [
     label: "Limpiar la casa",
     name: "Limpiar la casa",
     estimatedMinutes: 60,
-    urgency: "normal",
+    priority: "normal",
   },
   {
     id: "groceries",
     label: "Comprar supermercado",
     name: "Comprar en el supermercado",
     estimatedMinutes: 45,
-    urgency: "normal",
+    priority: "normal",
   },
   {
     id: "bill",
     label: "Pagar factura",
     name: "Pagar factura",
     estimatedMinutes: 10,
-    urgency: "high",
+    priority: "high",
   },
   {
     id: "trash",
     label: "Sacar la basura",
     name: "Sacar la basura",
     estimatedMinutes: 10,
-    urgency: "normal",
+    priority: "normal",
   },
   {
     id: "laundry",
     label: "Lavar ropa",
     name: "Lavar la ropa",
     estimatedMinutes: 15,
-    urgency: "normal",
+    priority: "normal",
   },
 ];
 
@@ -130,9 +133,9 @@ const createInitialState = (defaultUser: UserName): FormState => {
     name: "",
     description: "",
     estimatedMinutes: defaults.estimatedMinutes || "15",
-    dueDate: toDateInputValue(new Date()),
+    dueDate: "",
     dueTime: "",
-    urgency: defaults.urgency || "normal",
+    priority: "",
     assignedBy: defaultUser,
     assignedTo:
       defaults.assignedTo === "Yisel" || defaults.assignedTo === "Yorki"
@@ -143,7 +146,6 @@ const createInitialState = (defaultUser: UserName): FormState => {
   };
 };
 
-
 const hasMeaningfulDraft = (form: FormState, defaultUser: UserName): boolean => {
   const baseline = createInitialState(defaultUser);
   return (Object.keys(form) as (keyof FormState)[]).some(
@@ -153,12 +155,21 @@ const hasMeaningfulDraft = (form: FormState, defaultUser: UserName): boolean => 
 
 const readDraft = (defaultUser: UserName): FormState | null => {
   try {
-    const parsed = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null") as Partial<FormState> | null;
+    const parsed = JSON.parse(
+      localStorage.getItem(DRAFT_KEY) || "null",
+    ) as Partial<FormState> | null;
     if (!parsed) return null;
     const fallback = createInitialState(defaultUser);
     return {
       ...fallback,
       ...parsed,
+      priority:
+        parsed.priority === "low" ||
+        parsed.priority === "normal" ||
+        parsed.priority === "high" ||
+        parsed.priority === "critical"
+          ? parsed.priority
+          : "",
       assignedBy:
         parsed.assignedBy === "Yisel" || parsed.assignedBy === "Yorki"
           ? parsed.assignedBy
@@ -181,7 +192,9 @@ export function TaskForm({
 }: TaskFormProps) {
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<FormState>(() =>
-    editingTask ? createInitialState(defaultUser) : readDraft(defaultUser) || createInitialState(defaultUser),
+    editingTask
+      ? createInitialState(defaultUser)
+      : readDraft(defaultUser) || createInitialState(defaultUser),
   );
   const [showAdvanced, setShowAdvanced] = useState(Boolean(editingTask));
   const [showCustomDate, setShowCustomDate] = useState(false);
@@ -196,6 +209,15 @@ export function TaskForm({
 
   const datePresets = useMemo(getDatePresets, []);
   const presetDurationValues = ["5", "15", "30", "60"];
+  const missingFields = useMemo(
+    () =>
+      getMissingRequiredFields({
+        name: form.name,
+        priority: form.priority || undefined,
+        dueDate: form.dueDate || undefined,
+      }),
+    [form.dueDate, form.name, form.priority],
+  );
 
   useEffect(() => {
     if (!editingTask) {
@@ -216,9 +238,9 @@ export function TaskForm({
       name: editingTask.name,
       description: editingTask.description,
       estimatedMinutes: String(editingTask.estimatedMinutes),
-      dueDate: editingTask.dueDate,
+      dueDate: editingTask.dueDate || "",
       dueTime: editingTask.dueTime || "",
-      urgency: editingTask.urgency,
+      priority: editingTask.priority || "",
       assignedBy: editingTask.assignedBy,
       assignedTo: editingTask.assignedTo,
       recurrenceType: editingTask.recurrence.type,
@@ -240,7 +262,10 @@ export function TaskForm({
 
   useEffect(() => {
     setCustomDuration(!presetDurationValues.includes(form.estimatedMinutes));
-    setShowCustomDate(!datePresets.some((preset) => preset.value === form.dueDate));
+    setShowCustomDate(
+      Boolean(form.dueDate) &&
+        !datePresets.some((preset) => preset.value === form.dueDate),
+    );
   }, [datePresets, form.dueDate, form.estimatedMinutes]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
@@ -254,7 +279,7 @@ export function TaskForm({
       name: template.name,
       description: template.description || current.description,
       estimatedMinutes: String(template.estimatedMinutes),
-      urgency: template.urgency,
+      priority: template.priority,
     }));
     window.setTimeout(() => nameInputRef.current?.focus(), 0);
   };
@@ -265,10 +290,10 @@ export function TaskForm({
       id: editingTask?.id || crypto.randomUUID(),
       name: form.name.trim(),
       description: form.description.trim(),
-      estimatedMinutes: Math.max(1, Number(form.estimatedMinutes) || 1),
-      dueDate: form.dueDate,
-      dueTime: form.dueTime || undefined,
-      urgency: form.urgency,
+      estimatedMinutes: Math.max(1, Number(form.estimatedMinutes) || 15),
+      dueDate: form.dueDate || undefined,
+      dueTime: form.dueDate && form.dueTime ? form.dueTime : undefined,
+      priority: form.priority || undefined,
       assignedBy: form.assignedBy,
       assignedTo: form.assignedTo,
       status: editingTask?.status || "pending",
@@ -290,16 +315,6 @@ export function TaskForm({
   };
 
   const save = async (createAnother: boolean) => {
-    if (!form.name.trim()) {
-      setFormMessage("Escribe el nombre de la tarea.");
-      nameInputRef.current?.focus();
-      return;
-    }
-    if (!form.dueDate) {
-      setFormMessage("Selecciona una fecha límite.");
-      return;
-    }
-
     setSavingAction(createAnother ? "another" : "save");
     try {
       await onSave(buildTask(), createAnother);
@@ -308,7 +323,6 @@ export function TaskForm({
         DEFAULTS_KEY,
         JSON.stringify({
           estimatedMinutes: form.estimatedMinutes,
-          urgency: form.urgency,
           assignedTo: form.assignedTo,
         } satisfies SavedDefaults),
       );
@@ -318,6 +332,9 @@ export function TaskForm({
           ...form,
           name: "",
           description: "",
+          dueDate: "",
+          dueTime: "",
+          priority: "",
           recurrenceType: "none",
           recurrenceInterval: "1",
         };
@@ -388,11 +405,10 @@ export function TaskForm({
       )}
 
       <label className="field field-wide task-name-field">
-        <span>Nombre de la tarea</span>
+        <span>Nombre de la tarea <strong className="required-mark">Requerido</strong></span>
         <input
           ref={nameInputRef}
           autoFocus
-          required
           value={form.name}
           onChange={(event) => update("name", event.target.value)}
           placeholder="¿Qué necesitas terminar?"
@@ -417,8 +433,19 @@ export function TaskForm({
       </fieldset>
 
       <fieldset className="quick-group">
-        <legend>Fecha límite</legend>
+        <legend>Fecha límite <strong className="required-mark">Requerida</strong></legend>
         <div className="chip-grid date-presets">
+          <button
+            type="button"
+            className={`choice-chip ${!form.dueDate ? "selected incomplete-choice" : ""}`}
+            onClick={() => {
+              update("dueDate", "");
+              update("dueTime", "");
+              setShowCustomDate(false);
+            }}
+          >
+            Sin fecha
+          </button>
           {datePresets.map((preset) => (
             <button
               key={preset.id}
@@ -443,7 +470,6 @@ export function TaskForm({
         {showCustomDate && (
           <input
             className="quick-native-input"
-            required
             type="date"
             value={form.dueDate}
             onChange={(event) => update("dueDate", event.target.value)}
@@ -452,8 +478,8 @@ export function TaskForm({
       </fieldset>
 
       <fieldset className="quick-group">
-        <legend>Urgencia</legend>
-        <div className="segmented-options urgency-options">
+        <legend>Prioridad <strong className="required-mark">Requerida</strong></legend>
+        <div className="segmented-options priority-options">
           {([
             ["low", "Baja"],
             ["normal", "Normal"],
@@ -463,13 +489,22 @@ export function TaskForm({
             <button
               key={value}
               type="button"
-              className={`urgency-choice urgency-choice-${value} ${form.urgency === value ? "selected" : ""}`}
-              onClick={() => update("urgency", value)}
+              className={`priority-choice priority-choice-${value} ${form.priority === value ? "selected" : ""}`}
+              onClick={() => update("priority", value)}
             >
               {label}
             </button>
           ))}
         </div>
+        {form.priority && (
+          <button
+            className="clear-field-button"
+            type="button"
+            onClick={() => update("priority", "")}
+          >
+            Quitar prioridad
+          </button>
+        )}
       </fieldset>
 
       <fieldset className="quick-group">
@@ -541,7 +576,6 @@ export function TaskForm({
             <label className="field">
               <span>Fecha exacta</span>
               <input
-                required
                 type="date"
                 value={form.dueDate}
                 onChange={(event) => update("dueDate", event.target.value)}
@@ -552,6 +586,7 @@ export function TaskForm({
               <span>Hora límite (opcional)</span>
               <input
                 type="time"
+                disabled={!form.dueDate}
                 value={form.dueTime}
                 onChange={(event) => update("dueTime", event.target.value)}
               />
@@ -572,7 +607,6 @@ export function TaskForm({
             <label className="field">
               <span>Tiempo exacto (minutos)</span>
               <input
-                required
                 min="1"
                 inputMode="numeric"
                 type="number"
@@ -611,6 +645,19 @@ export function TaskForm({
         </div>
       )}
 
+      {missingFields.length > 0 && (
+        <div className="incomplete-form-notice" role="status">
+          <strong>La tarea se guardará como incompleta.</strong>
+          <span>
+            Faltan: {formatMissingRequiredFields({
+              name: form.name,
+              priority: form.priority || undefined,
+              dueDate: form.dueDate || undefined,
+            })}. No aparecerá en el panel hasta completar esos datos.
+          </span>
+        </div>
+      )}
+
       {formMessage && (
         <p className={`form-message ${formMessage.startsWith("Tarea") ? "form-message-success" : ""}`}>
           {formMessage}
@@ -642,7 +689,9 @@ export function TaskForm({
             ? "Guardando…"
             : editingTask
               ? "Guardar cambios"
-              : "Guardar tarea"}
+              : missingFields.length
+                ? "Guardar incompleta"
+                : "Guardar tarea"}
         </button>
       </div>
     </form>

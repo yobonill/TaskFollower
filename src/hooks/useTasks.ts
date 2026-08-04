@@ -5,6 +5,7 @@ import type {
   CompletedTaskUndo,
   SyncState,
   Task,
+  TaskPriority,
   UserName,
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
@@ -19,16 +20,30 @@ type PendingOperation =
   | { id: string; type: "delete"; taskId: string }
   | { id: string; type: "replace"; tasks: Task[] };
 
-const normalizeTask = (task: Task): Task => ({
-  ...task,
-  description: task.description || "",
-  estimatedMinutes: Math.max(1, Number(task.estimatedMinutes) || 15),
-  urgency: task.urgency || "normal",
-  assignedBy: task.assignedBy || task.assignedTo || "Yorki",
-  assignedTo: task.assignedTo || task.assignedBy || "Yorki",
-  status: task.status || "pending",
-  recurrence: task.recurrence || { type: "none", interval: 1 },
-});
+type LegacyTask = Task & { urgency?: TaskPriority };
+
+const normalizeTask = (task: Task): Task => {
+  const legacyTask = task as LegacyTask;
+  const { urgency: legacyUrgency, ...taskWithoutLegacyUrgency } = legacyTask;
+  const dueDate =
+    typeof task.dueDate === "string" && task.dueDate.trim()
+      ? task.dueDate
+      : undefined;
+
+  return {
+    ...taskWithoutLegacyUrgency,
+    name: typeof task.name === "string" ? task.name : "",
+    description: task.description || "",
+    estimatedMinutes: Math.max(1, Number(task.estimatedMinutes) || 15),
+    dueDate,
+    dueTime: dueDate && task.dueTime ? task.dueTime : undefined,
+    priority: task.priority || legacyUrgency || undefined,
+    assignedBy: task.assignedBy || task.assignedTo || "Yorki",
+    assignedTo: task.assignedTo || task.assignedBy || "Yorki",
+    status: task.status || "pending",
+    recurrence: task.recurrence || { type: "none", interval: 1 },
+  };
+};
 
 const readCachedTasks = (): Task[] => {
   try {
@@ -46,7 +61,18 @@ const storeCachedTasks = (tasks: Task[]): void => {
 
 const readPendingOperations = (): PendingOperation[] => {
   try {
-    return JSON.parse(localStorage.getItem(PENDING_KEY) || "[]") as PendingOperation[];
+    const operations = JSON.parse(
+      localStorage.getItem(PENDING_KEY) || "[]",
+    ) as PendingOperation[];
+    return operations.map((operation) => {
+      if (operation.type === "upsert") {
+        return { ...operation, task: normalizeTask(operation.task) };
+      }
+      if (operation.type === "replace") {
+        return { ...operation, tasks: operation.tasks.map(normalizeTask) };
+      }
+      return operation;
+    });
   } catch {
     return [];
   }
@@ -65,7 +91,7 @@ const tasksToRecord = (tasks: Task[]): Record<string, Task> =>
 const recordToTasks = (value: unknown): Task[] => {
   if (!value || typeof value !== "object") return [];
   return Object.values(value as Record<string, Task>)
-    .filter((task): task is Task => Boolean(task?.id && task?.name))
+    .filter((task): task is Task => Boolean(task?.id))
     .map(normalizeTask);
 };
 
@@ -234,7 +260,7 @@ export const useTasks = (): UseTasksResult => {
       await saveTask(completedTask);
 
       let generatedTaskId: string | undefined;
-      if (originalTask.recurrence.type !== "none") {
+      if (originalTask.recurrence.type !== "none" && originalTask.dueDate) {
         generatedTaskId = crypto.randomUUID();
         const nextTask: Task = {
           ...originalTask,

@@ -2,7 +2,7 @@ export const USERS = ["Yisel", "Yorki"] as const;
 export type UserName = (typeof USERS)[number];
 export type UserFilter = "all" | UserName;
 
-export type TaskUrgency = "low" | "normal" | "high" | "critical";
+export type TaskPriority = "low" | "normal" | "high" | "critical";
 export type TaskStatus = "pending" | "done" | "cancelled";
 export type RecurrenceType = "none" | "daily" | "weekly" | "monthly";
 
@@ -16,9 +16,9 @@ export interface Task {
   name: string;
   description: string;
   estimatedMinutes: number;
-  dueDate: string;
+  dueDate?: string;
   dueTime?: string;
-  urgency: TaskUrgency;
+  priority?: TaskPriority;
   assignedBy: UserName;
   assignedTo: UserName;
   status: TaskStatus;
@@ -33,7 +33,7 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 1;
+  schemaVersion: 2;
   exportedAt: string;
   tasks: Task[];
 }

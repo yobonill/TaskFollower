@@ -13,10 +13,14 @@ import {
   USERS,
   type Task,
   type TaskExport,
-  type TaskUrgency,
+  type TaskPriority,
   type UserFilter,
   type UserName,
 } from "./models/task";
+import {
+  formatMissingRequiredFields,
+  isTaskDataComplete,
+} from "./utils/taskCompleteness";
 import {
   formatDueDate,
   formatDuration,
@@ -38,7 +42,7 @@ interface ToastState {
   action?: () => void | Promise<void>;
 }
 
-const urgencyLabels: Record<TaskUrgency, string> = {
+const priorityLabels: Record<TaskPriority, string> = {
   low: "Baja",
   normal: "Normal",
   high: "Alta",
@@ -57,7 +61,7 @@ const isTaskArray = (value: unknown): value is Task[] =>
       task &&
       typeof task === "object" &&
       typeof (task as Task).id === "string" &&
-      typeof (task as Task).name === "string",
+      ((task as Task).name === undefined || typeof (task as Task).name === "string"),
   );
 
 function App() {
@@ -108,7 +112,25 @@ function App() {
   );
 
   const pendingTasks = useMemo(
-    () => sortPendingTasks(filteredTasks.filter((task) => task.status === "pending")),
+    () =>
+      sortPendingTasks(
+        filteredTasks.filter(
+          (task) => task.status === "pending" && isTaskDataComplete(task),
+        ),
+      ),
+    [filteredTasks],
+  );
+
+  const incompleteTasks = useMemo(
+    () =>
+      filteredTasks
+        .filter(
+          (task) => task.status === "pending" && !isTaskDataComplete(task),
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        ),
     [filteredTasks],
   );
 
@@ -162,8 +184,18 @@ function App() {
 
   const handleSave = async (task: Task, createAnother: boolean) => {
     const wasEditing = Boolean(editingTask);
+    const complete = isTaskDataComplete(task);
     await saveTask(task);
-    showToast({ message: wasEditing ? "Cambios guardados." : "Tarea guardada." }, 3200);
+    showToast(
+      {
+        message: complete
+          ? wasEditing
+            ? "Cambios guardados."
+            : "Tarea guardada."
+          : `Tarea guardada como incompleta. Faltan: ${formatMissingRequiredFields(task)}.`,
+      },
+      complete ? 3200 : 6500,
+    );
     if (!createAnother) closeForm();
   };
 
@@ -257,7 +289,8 @@ function App() {
   };
 
   const handleDelete = async (task: Task) => {
-    if (!window.confirm(`¿Eliminar permanentemente la tarea “${task.name}”?`)) return;
+    const taskName = task.name.trim() || "Tarea sin nombre";
+    if (!window.confirm(`¿Eliminar permanentemente la tarea “${taskName}”?`)) return;
     await deleteTask(task.id);
     showToast({ message: "Tarea eliminada." }, 3200);
   };
@@ -292,7 +325,7 @@ function App() {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -519,6 +552,15 @@ function App() {
                   <strong>{pendingTasks.length}</strong>
                   <span>Pendientes</span>
                 </div>
+                <button
+                  type="button"
+                  className={incompleteTasks.length ? "summary-incomplete" : ""}
+                  onClick={() => changeView("manage")}
+                  title="Ver tareas con datos incompletos"
+                >
+                  <strong>{incompleteTasks.length}</strong>
+                  <span>Incompletas</span>
+                </button>
               </div>
             </header>
 
@@ -543,10 +585,17 @@ function App() {
             ) : (
               <section className="empty-state">
                 <span className="empty-icon">✓</span>
-                <h2>No hay tareas pendientes</h2>
-                <p>Todo en esta vista está completado.</p>
-                <button className="button button-primary" onClick={openCreateForm}>
-                  Crear una tarea
+                <h2>{incompleteTasks.length ? "No hay tareas listas" : "No hay tareas pendientes"}</h2>
+                <p>
+                  {incompleteTasks.length
+                    ? "Hay tareas guardadas que todavía necesitan nombre, prioridad o fecha límite."
+                    : "Todo en esta vista está completado."}
+                </p>
+                <button
+                  className="button button-primary"
+                  onClick={() => incompleteTasks.length ? changeView("manage") : openCreateForm()}
+                >
+                  {incompleteTasks.length ? "Completar datos" : "Crear una tarea"}
                 </button>
               </section>
             )}
@@ -581,6 +630,44 @@ function App() {
               />
             </div>
 
+            <div className="task-list-panel incomplete-panel">
+              <div className="list-heading">
+                <div>
+                  <h2>Tareas incompletas</h2>
+                  <small>No aparecen en el panel hasta completar los campos requeridos.</small>
+                </div>
+                <span>{incompleteTasks.length}</span>
+              </div>
+
+              {incompleteTasks.length ? (
+                <div className="management-list">
+                  {incompleteTasks.map((task) => (
+                    <article className="management-row incomplete-row" key={task.id}>
+                      <span className="incomplete-mark">!</span>
+                      <div className="management-main">
+                        <strong>{task.name.trim() || "Tarea sin nombre"}</strong>
+                        <span>
+                          {task.assignedTo} · Faltan: {formatMissingRequiredFields(task)}
+                        </span>
+                      </div>
+                      <span className="status-pill status-incomplete">Incompleta</span>
+                      <div className="row-actions">
+                        <button className="primary-row-action" onClick={() => openEditForm(task)}>
+                          Completar datos
+                        </button>
+                        <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                        <button className="danger-action" onClick={() => void handleDelete(task)}>
+                          Eliminar
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="list-empty">No hay tareas con datos incompletos.</p>
+              )}
+            </div>
+
             <div className="task-list-panel">
               <div className="list-heading">
                 <h2>Tareas pendientes</h2>
@@ -591,7 +678,7 @@ function App() {
                 <div className="management-list">
                   {pendingTasks.map((task) => (
                     <article className="management-row" key={task.id}>
-                      <span className={`urgency-dot urgency-dot-${task.urgency}`} />
+                      <span className={`priority-dot priority-dot-${task.priority || "normal"}`} />
                       <div className="management-main">
                         <strong>{task.name}</strong>
                         <span>
@@ -599,7 +686,7 @@ function App() {
                         </span>
                       </div>
                       <span className={`status-pill ${isTaskOverdue(task) ? "status-overdue" : ""}`}>
-                        {isTaskOverdue(task) ? "Vencida" : urgencyLabels[task.urgency]}
+                        {isTaskOverdue(task) ? "Vencida" : priorityLabels[task.priority || "normal"]}
                       </span>
                       <div className="row-actions">
                         <button onClick={() => openEditForm(task)}>Editar</button>
