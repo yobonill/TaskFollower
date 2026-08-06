@@ -28,3 +28,9 @@ npm run dev
 ```
 
 Until Firebase is configured, the app runs in local preview mode with sample tasks.
+
+## Usuarios y Papipuntos
+
+La aplicación incluye dos usuarios autenticados, Yorki y Yisel, con asignación de tareas entre ambos. También incorpora 100 niveles, Papipuntos por creación y finalización de tareas, bonos por completar antes de la fecha límite, penalizaciones por tareas vencidas, recompensas canjeables, historial de movimientos, tiempo total pendiente para hoy y tareas vencidas, y fecha final para tareas recurrentes.
+
+Consulta `COMBINED_AUTH_PAPIPOINTS_UPDATE.md` para las reglas y el orden de despliegue.

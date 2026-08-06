@@ -3,6 +3,7 @@ import type { Task, TaskPriority, UserName } from "../models/task";
 import {
   formatDueDate,
   formatDuration,
+  getNextDueDate,
   isTaskOverdue,
   toDateInputValue,
 } from "../utils/taskDates";
@@ -10,14 +11,13 @@ import {
 interface TaskCardProps {
   task: Task;
   featured?: boolean;
-  onComplete: (task: Task, completedBy: UserName) => void;
+  onComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onDuplicate: (task: Task) => void;
   onReassign: (task: Task, assignedTo: UserName) => void;
   onPostpone: (task: Task, dueDate: string) => void;
   onCancelTask: (task: Task) => void;
   onDelete: (task: Task) => void;
-  activeUser: UserName;
 }
 
 const priorityLabels: Record<TaskPriority, string> = {
@@ -34,13 +34,34 @@ const addDays = (amount: number): string => {
 };
 
 const formatRecurrence = (task: Task): string => {
-  const { type, interval } = task.recurrence;
+  const { type, interval, endDate } = task.recurrence;
   const amount = Math.max(1, interval);
 
-  if (type === "daily") return amount === 1 ? "Cada día" : `Cada ${amount} días`;
-  if (type === "weekly") return amount === 1 ? "Cada semana" : `Cada ${amount} semanas`;
-  if (type === "monthly") return amount === 1 ? "Cada mes" : `Cada ${amount} meses`;
-  return "";
+  let label = "";
+  if (type === "daily") label = amount === 1 ? "Cada día" : `Cada ${amount} días`;
+  if (type === "weekly") label = amount === 1 ? "Cada semana" : `Cada ${amount} semanas`;
+  if (type === "monthly") label = amount === 1 ? "Cada mes" : `Cada ${amount} meses`;
+  if (label && endDate) {
+    const end = new Date(`${endDate}T12:00:00`);
+    label += ` hasta ${new Intl.DateTimeFormat("es-DO", {
+      day: "numeric",
+      month: "short",
+    }).format(end)}`;
+  }
+  return label;
+};
+
+const isFinalRecurrence = (task: Task): boolean => {
+  if (
+    task.recurrence.type === "none" ||
+    !task.recurrence.endDate ||
+    !task.dueDate
+  ) {
+    return false;
+  }
+  return (
+    getNextDueDate(task.dueDate, task.recurrence) > task.recurrence.endDate
+  );
 };
 
 export function TaskCard({
@@ -53,7 +74,6 @@ export function TaskCard({
   onPostpone,
   onCancelTask,
   onDelete,
-  activeUser,
 }: TaskCardProps) {
   const overdue = isTaskOverdue(task);
   const priority = task.priority || "normal";
@@ -92,6 +112,9 @@ export function TaskCard({
           {overdue && <span className="overdue-label">Vencida</span>}
           {task.recurrence.type !== "none" && (
             <span className="recurrence-label">↻ {formatRecurrence(task)}</span>
+          )}
+          {isFinalRecurrence(task) && (
+            <span className="last-recurrence-label">Última repetición</span>
           )}
         </div>
 
@@ -197,7 +220,7 @@ export function TaskCard({
 
       <button
         className="button button-primary complete-button"
-        onClick={() => onComplete(task, activeUser)}
+        onClick={() => onComplete(task)}
       >
         ✓ Completar
       </button>

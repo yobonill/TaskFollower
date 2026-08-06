@@ -1,12 +1,18 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
 } from "react";
+import { LoginScreen } from "./components/LoginScreen";
+import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
 import { TaskForm } from "./components/TaskForm";
+import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
+import { useAuth } from "./hooks/useAuth";
+import { usePapipoints } from "./hooks/usePapipoints";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useTasks } from "./hooks/useTasks";
 import {
@@ -28,18 +34,26 @@ import {
   isTaskOverdue,
   sortPendingTasks,
 } from "./utils/taskDates";
+import { getLevelFromPapipoints } from "./utils/papipoints";
 import "./styles.css";
 
-const USER_KEY = "taskFollower.selectedUser";
+const USER_FILTER_KEY = "taskFollower.taskFilter.v1";
 const APP_LOCALE = "es-DO";
 
-type View = "dashboard" | "manage";
+type View = "dashboard" | "manage" | "papipoints";
 type ImportMode = "merge" | "replace";
 
 interface ToastState {
   message: string;
   actionLabel?: string;
   action?: () => void | Promise<void>;
+}
+
+interface PointsFeedbackState {
+  amount: number;
+  title: string;
+  userName: UserName;
+  levelMessage?: string;
 }
 
 const priorityLabels: Record<TaskPriority, string> = {
@@ -49,9 +63,11 @@ const priorityLabels: Record<TaskPriority, string> = {
   critical: "Crítica",
 };
 
-const readSelectedUser = (): UserFilter => {
-  const value = localStorage.getItem(USER_KEY);
-  return value === "Yisel" || value === "Yorki" ? value : "all";
+const readSelectedUser = (defaultUser: UserName): UserFilter => {
+  const value = localStorage.getItem(USER_FILTER_KEY);
+  return value === "Yisel" || value === "Yorki" || value === "all"
+    ? value
+    : defaultUser;
 };
 
 const isTaskArray = (value: unknown): value is Task[] =>
@@ -64,23 +80,49 @@ const isTaskArray = (value: unknown): value is Task[] =>
       ((task as Task).name === undefined || typeof (task as Task).name === "string"),
   );
 
-function App() {
+const sumEstimatedMinutes = (tasks: Task[]): number =>
+  tasks.reduce((total, task) => total + (task.estimatedMinutes || 0), 0);
+
+interface TaskFollowerAppProps {
+  currentUser: AppUserDefinition;
+  onLogout: () => Promise<void>;
+}
+
+function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const {
     tasks,
     syncState,
     syncMessage,
-    pendingCount,
+    pendingCount: taskPendingCount,
     saveTask,
     completeTask,
     undoComplete,
     deleteTask,
     replaceTasks,
     mergeTasks,
-    retrySync,
-  } = useTasks();
+    retrySync: retryTaskSync,
+  } = useTasks(currentUser);
+  const {
+    transactions,
+    rewards,
+    profiles,
+    pendingCount: papipointsPendingCount,
+    awardTaskCreation,
+    removeTaskCreationReward,
+    awardTaskCompletion,
+    removeTaskCompletionRewards,
+    removeAllTaskTransactions,
+    applyOverduePenalty,
+    saveReward,
+    deleteReward,
+    redeemReward,
+    retrySync: retryPapipointsSync,
+  } = usePapipoints(currentUser);
   const { canInstall, install } = usePwaInstall();
 
-  const [selectedUser, setSelectedUser] = useState<UserFilter>(readSelectedUser);
+  const [selectedUser, setSelectedUser] = useState<UserFilter>(() =>
+    readSelectedUser(currentUser.name),
+  );
   const [view, setView] = useState<View>("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -89,19 +131,42 @@ function App() {
   const [showCancelled, setShowCancelled] = useState(false);
   const [importMode, setImportMode] = useState<ImportMode>("merge");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [pointsFeedback, setPointsFeedback] = useState<PointsFeedbackState | null>(null);
   const [installBannerHidden, setInstallBannerHidden] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const pointsTimerRef = useRef<number | null>(null);
+  const overdueCheckRef = useRef(new Set<string>());
 
-  const activeUser: UserName = selectedUser === "all" ? "Yorki" : selectedUser;
-  const completionUserFor = (task: Task): UserName =>
-    selectedUser === "all" ? task.assignedTo : selectedUser;
+  const totalPendingCount = taskPendingCount + papipointsPendingCount;
 
   const showToast = useCallback((nextToast: ToastState, duration = 9000) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToast(nextToast);
     toastTimerRef.current = window.setTimeout(() => setToast(null), duration);
   }, []);
+
+  const showPointsFeedback = useCallback(
+    (amount: number, title: string, userName: UserName) => {
+      if (!amount) return;
+      const currentBalance = profiles[userName].balance;
+      const previousBalance = Math.max(0, currentBalance);
+      const nextBalance = Math.max(0, previousBalance + amount);
+      const previousLevel = getLevelFromPapipoints(previousBalance);
+      const nextLevel = getLevelFromPapipoints(nextBalance);
+      let levelMessage: string | undefined;
+      if (nextLevel > previousLevel) levelMessage = `¡Subiste al nivel ${nextLevel}!`;
+      if (nextLevel < previousLevel) levelMessage = `Ahora estás en el nivel ${nextLevel}.`;
+
+      if (pointsTimerRef.current) window.clearTimeout(pointsTimerRef.current);
+      setPointsFeedback({ amount, title, userName, levelMessage });
+      pointsTimerRef.current = window.setTimeout(
+        () => setPointsFeedback(null),
+        levelMessage ? 5200 : 3400,
+      );
+    },
+    [profiles],
+  );
 
   const filteredTasks = useMemo(
     () =>
@@ -158,12 +223,52 @@ function App() {
     [filteredTasks],
   );
 
-  const overdueCount = pendingTasks.filter(isTaskOverdue).length;
-  const dueTodayCount = pendingTasks.filter(isTaskDueToday).length;
+  const overdueTasks = useMemo(
+    () => pendingTasks.filter(isTaskOverdue),
+    [pendingTasks],
+  );
+  const dueTodayTasks = useMemo(
+    () => pendingTasks.filter(isTaskDueToday),
+    [pendingTasks],
+  );
+  const workloadTasks = useMemo(
+    () =>
+      pendingTasks.filter(
+        (task) => isTaskOverdue(task) || isTaskDueToday(task),
+      ),
+    [pendingTasks],
+  );
+  const workloadMinutes = sumEstimatedMinutes(workloadTasks);
+  const overdueMinutes = sumEstimatedMinutes(overdueTasks);
+  const todayMinutes = sumEstimatedMinutes(
+    dueTodayTasks.filter((task) => !isTaskOverdue(task)),
+  );
+  const unestimatedWorkloadCount = workloadTasks.filter(
+    (task) => !task.estimatedMinutes,
+  ).length;
+
+  useEffect(() => {
+    const eligible = tasks.filter(
+      (task) =>
+        task.status === "pending" &&
+        isTaskDataComplete(task) &&
+        isTaskOverdue(task),
+    );
+
+    for (const task of eligible) {
+      if (overdueCheckRef.current.has(task.id)) continue;
+      overdueCheckRef.current.add(task.id);
+      void applyOverduePenalty(task).then((amount) => {
+        if (amount) {
+          showPointsFeedback(amount, `Tarea vencida: ${task.name}`, task.assignedTo);
+        }
+      });
+    }
+  }, [applyOverduePenalty, showPointsFeedback, tasks]);
 
   const changeSelectedUser = (value: UserFilter) => {
     setSelectedUser(value);
-    localStorage.setItem(USER_KEY, value);
+    localStorage.setItem(USER_FILTER_KEY, value);
   };
 
   const openCreateForm = () => {
@@ -186,6 +291,12 @@ function App() {
     const wasEditing = Boolean(editingTask);
     const complete = isTaskDataComplete(task);
     await saveTask(task);
+
+    if (complete) {
+      const points = await awardTaskCreation(task);
+      if (points) showPointsFeedback(points, "Tarea creada", currentUser.name);
+    }
+
     showToast(
       {
         message: complete
@@ -199,13 +310,29 @@ function App() {
     if (!createAnother) closeForm();
   };
 
-  const handleComplete = async (task: Task, completedBy: UserName) => {
-    const undo = await completeTask(task, completedBy);
+  const handleComplete = async (task: Task) => {
+    const completedAt = new Date().toISOString();
+    const undo = await completeTask(task, currentUser);
+    const points = await awardTaskCompletion(task, completedAt, currentUser);
+    if (points) {
+      showPointsFeedback(
+        points,
+        points > (task.priority ? { low: 5, normal: 10, high: 20, critical: 35 }[task.priority] : 0)
+          ? "Tarea completada antes de tiempo"
+          : "Tarea completada",
+        currentUser.name,
+      );
+    }
+
     showToast({
-      message: "Tarea completada.",
+      message: points
+        ? `Tarea completada. Ganaste ${points} Papipuntos.`
+        : "Tarea completada.",
       actionLabel: "Deshacer",
       action: async () => {
+        const removed = await removeTaskCompletionRewards(task.id);
         await undoComplete(undo);
+        if (removed) showPointsFeedback(removed, "Se deshizo la tarea completada", currentUser.name);
         showToast({ message: "La tarea volvió a estar pendiente." }, 3200);
       },
     });
@@ -217,23 +344,32 @@ function App() {
       ...task,
       id: crypto.randomUUID(),
       status: "pending",
+      source: "duplicate",
+      assignedBy: currentUser.name,
+      createdByUserId: currentUser.uid,
+      assignedToUserId: getAppUserByName(task.assignedTo).uid,
+      lastModifiedByUserId: currentUser.uid,
       completedAt: undefined,
       completedBy: undefined,
+      completedByUserId: undefined,
       cancelledAt: undefined,
       cancelledBy: undefined,
+      cancelledByUserId: undefined,
       recurrenceSeriesId:
         task.recurrence.type === "none" ? undefined : crypto.randomUUID(),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     await saveTask(duplicate);
-    showToast({ message: "Tarea duplicada." }, 3200);
+    showToast({ message: "Tarea duplicada. No genera Papipuntos por creación." }, 4200);
   };
 
   const handleReassign = async (task: Task, assignedTo: UserName) => {
     await saveTask({
       ...task,
       assignedTo,
+      assignedToUserId: getAppUserByName(assignedTo).uid,
+      lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
     showToast({ message: `Tarea asignada a ${assignedTo}.` }, 3200);
@@ -246,21 +382,28 @@ function App() {
       status: "pending",
       cancelledAt: undefined,
       cancelledBy: undefined,
+      cancelledByUserId: undefined,
+      lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
+    overdueCheckRef.current.delete(task.id);
     showToast({ message: "Fecha límite actualizada." }, 3200);
   };
 
   const handleCancelTask = async (task: Task) => {
     if (!window.confirm(`¿Cancelar la tarea “${task.name}”?`)) return;
     const original = task;
+    const removed = await removeTaskCreationReward(task.id);
     await saveTask({
       ...task,
       status: "cancelled",
       cancelledAt: new Date().toISOString(),
-      cancelledBy: completionUserFor(task),
+      cancelledBy: currentUser.name,
+      cancelledByUserId: currentUser.uid,
+      lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
+    if (removed) showPointsFeedback(removed, "Tarea cancelada", currentUser.name);
     showToast({
       message: "Tarea cancelada.",
       actionLabel: "Deshacer",
@@ -270,29 +413,45 @@ function App() {
           status: "pending",
           cancelledAt: undefined,
           cancelledBy: undefined,
+          cancelledByUserId: undefined,
+          lastModifiedByUserId: currentUser.uid,
           updatedAt: new Date().toISOString(),
         });
+        if (isTaskDataComplete(original)) {
+          const restored = await awardTaskCreation(original);
+          if (restored) showPointsFeedback(restored, "Tarea restaurada", currentUser.name);
+        }
         showToast({ message: "La tarea fue restaurada." }, 3200);
       },
     });
   };
 
   const handleRestoreCancelled = async (task: Task) => {
-    await saveTask({
+    const restoredTask: Task = {
       ...task,
       status: "pending",
       cancelledAt: undefined,
       cancelledBy: undefined,
+      cancelledByUserId: undefined,
+      lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    await saveTask(restoredTask);
+    if (isTaskDataComplete(restoredTask)) {
+      const restored = await awardTaskCreation(restoredTask);
+      if (restored) showPointsFeedback(restored, "Tarea restaurada", currentUser.name);
+    }
     showToast({ message: "Tarea restaurada." }, 3200);
   };
 
   const handleDelete = async (task: Task) => {
     const taskName = task.name.trim() || "Tarea sin nombre";
     if (!window.confirm(`¿Eliminar permanentemente la tarea “${taskName}”?`)) return;
+    await removeAllTaskTransactions(task.id);
     await deleteTask(task.id);
-    showToast({ message: "Tarea eliminada." }, 3200);
+    showToast({
+      message: "Tarea eliminada junto con sus movimientos de Papipuntos.",
+    }, 4200);
   };
 
   const handleInstall = async () => {
@@ -325,7 +484,7 @@ function App() {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -374,10 +533,27 @@ function App() {
 
       if (importMode === "replace") await replaceTasks(importedTasks);
       else await mergeTasks(importedTasks);
-      showToast({ message: "Importación completada." }, 3500);
+      showToast({
+        message:
+          "Importación completada. Las tareas importadas no generan Papipuntos por creación.",
+      }, 5200);
     } catch {
       window.alert("El archivo seleccionado no contiene JSON válido.");
     }
+  };
+
+  const handleLogout = async () => {
+    if (totalPendingCount > 0) {
+      const continueLogout = window.confirm(
+        "Hay cambios pendientes de sincronizar. Si cierras sesión ahora, permanecerán guardados en este dispositivo hasta el próximo inicio de sesión. ¿Continuar?",
+      );
+      if (!continueLogout) return;
+    }
+    await onLogout();
+  };
+
+  const retryAllSync = async () => {
+    await Promise.all([retryTaskSync(), retryPapipointsSync()]);
   };
 
   const changeView = (nextView: View) => {
@@ -391,6 +567,11 @@ function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     await action?.();
   };
+
+  const dashboardProfiles =
+    selectedUser === "all"
+      ? [profiles.Yorki, profiles.Yisel]
+      : [profiles[selectedUser]];
 
   return (
     <div className={`app-shell ${menuOpen ? "menu-open" : "menu-collapsed"}`}>
@@ -412,10 +593,11 @@ function App() {
           value={selectedUser}
           onChange={(event) => changeSelectedUser(event.target.value as UserFilter)}
         >
-          <option value="all">Todos</option>
-          {USERS.map((user) => (
-            <option key={user} value={user}>{user}</option>
+          <option value={currentUser.name}>Mis tareas</option>
+          {USERS.filter((user) => user !== currentUser.name).map((user) => (
+            <option key={user} value={user}>Tareas de {user}</option>
           ))}
+          <option value="all">Todas</option>
         </select>
       </header>
 
@@ -454,6 +636,16 @@ function App() {
           </button>
 
           <button
+            className={`sidebar-item ${view === "papipoints" ? "sidebar-item-active" : ""}`}
+            type="button"
+            title="Papipuntos y recompensas"
+            onClick={() => changeView("papipoints")}
+          >
+            <span className="sidebar-icon">★</span>
+            <span className="sidebar-label">Papipuntos</span>
+          </button>
+
+          <button
             className={`sidebar-item ${view === "manage" ? "sidebar-item-active" : ""}`}
             type="button"
             title="Gestionar tareas"
@@ -488,18 +680,36 @@ function App() {
 
         <div className="sidebar-spacer" />
 
+        <div className="sidebar-account">
+          <span className="sidebar-account-avatar" aria-hidden="true">
+            {currentUser.name.charAt(0)}
+          </span>
+          <div className="sidebar-label sidebar-account-copy">
+            <strong>{currentUser.name}</strong>
+            <span>Nivel {profiles[currentUser.name].level}</span>
+          </div>
+          <button
+            className="sidebar-label sidebar-logout"
+            type="button"
+            onClick={() => void handleLogout()}
+          >
+            Salir
+          </button>
+        </div>
+
         <div className="sidebar-user">
-          <label htmlFor="selected-user" className="sidebar-label">Mostrar tareas de</label>
+          <label htmlFor="selected-user" className="sidebar-label">Mostrar</label>
           <select
             id="selected-user"
             value={selectedUser}
             onChange={(event) => changeSelectedUser(event.target.value as UserFilter)}
             title="Seleccionar usuario"
           >
-            <option value="all">Todos</option>
-            {USERS.map((user) => (
-              <option key={user} value={user}>{user}</option>
+            <option value={currentUser.name}>Mis tareas</option>
+            {USERS.filter((user) => user !== currentUser.name).map((user) => (
+              <option key={user} value={user}>Tareas de {user}</option>
             ))}
+            <option value="all">Todas</option>
           </select>
           <span className="sidebar-user-short" aria-hidden="true">
             {selectedUser === "all" ? "T" : selectedUser.charAt(0)}
@@ -510,14 +720,16 @@ function App() {
           <span className="sync-dot" />
           <div className="sidebar-label sidebar-sync-text">
             <span>{syncMessage}</span>
-            {pendingCount > 0 && (
+            {totalPendingCount > 0 && (
               <strong>
-                {pendingCount === 1 ? "1 cambio pendiente" : `${pendingCount} cambios pendientes`}
+                {totalPendingCount === 1
+                  ? "1 cambio pendiente"
+                  : `${totalPendingCount} cambios pendientes`}
               </strong>
             )}
           </div>
           {(syncState === "error" || syncState === "offline") && (
-            <button className="sidebar-label" type="button" onClick={() => void retrySync()}>
+            <button className="sidebar-label" type="button" onClick={() => void retryAllSync()}>
               Reintentar
             </button>
           )}
@@ -534,18 +746,30 @@ function App() {
       )}
 
       <main className="main-content">
-        {view === "dashboard" ? (
+        {view === "dashboard" && (
           <section className="dashboard-section">
-            <header className="dashboard-toolbar">
-              <h1>{selectedUser === "all" ? "Tareas" : `Tareas de ${selectedUser}`}</h1>
+            <header className="dashboard-toolbar dashboard-toolbar-compact">
+              <h1>
+                {selectedUser === "all"
+                  ? "Todas las tareas"
+                  : selectedUser === currentUser.name
+                    ? "Mis tareas"
+                    : `Tareas de ${selectedUser}`}
+              </h1>
+
+              <div className="dashboard-levels">
+                {dashboardProfiles.map((profile) => (
+                  <LevelProgress key={profile.userId} profile={profile} />
+                ))}
+              </div>
 
               <div className="summary-strip" aria-label="Resumen de tareas">
-                <div className={overdueCount ? "summary-danger" : ""}>
-                  <strong>{overdueCount}</strong>
+                <div className={overdueTasks.length ? "summary-danger" : ""}>
+                  <strong>{overdueTasks.length}</strong>
                   <span>Vencidas</span>
                 </div>
                 <div>
-                  <strong>{dueTodayCount}</strong>
+                  <strong>{dueTodayTasks.length}</strong>
                   <span>Para hoy</span>
                 </div>
                 <div>
@@ -562,6 +786,19 @@ function App() {
                   <span>Incompletas</span>
                 </button>
               </div>
+
+              <div className="workload-summary">
+                <div>
+                  <span>Tiempo pendiente entre hoy y vencidas</span>
+                  <strong>{formatDuration(workloadMinutes || undefined)}</strong>
+                </div>
+                <small>
+                  Hoy: {formatDuration(todayMinutes || undefined)} · Vencidas: {formatDuration(overdueMinutes || undefined)}
+                  {unestimatedWorkloadCount > 0
+                    ? ` · ${unestimatedWorkloadCount} ${unestimatedWorkloadCount === 1 ? "tarea sin estimar" : "tareas sin estimar"}`
+                    : ""}
+                </small>
+              </div>
             </header>
 
             {pendingTasks.length ? (
@@ -571,8 +808,7 @@ function App() {
                     key={task.id}
                     featured={index === 0}
                     task={task}
-                    activeUser={completionUserFor(task)}
-                    onComplete={(item, user) => void handleComplete(item, user)}
+                    onComplete={(item) => void handleComplete(item)}
                     onEdit={openEditForm}
                     onDuplicate={(item) => void handleDuplicate(item)}
                     onReassign={(item, user) => void handleReassign(item, user)}
@@ -600,7 +836,22 @@ function App() {
               </section>
             )}
           </section>
-        ) : (
+        )}
+
+        {view === "papipoints" && (
+          <PapipointsPanel
+            currentUser={currentUser}
+            profiles={profiles}
+            rewards={rewards}
+            transactions={transactions}
+            onSaveReward={saveReward}
+            onDeleteReward={deleteReward}
+            onRedeemReward={redeemReward}
+            onMessage={(message) => showToast({ message }, 4200)}
+          />
+        )}
+
+        {view === "manage" && (
           <section className="manage-section">
             <div className="manage-heading">
               <div>
@@ -690,9 +941,7 @@ function App() {
                       </span>
                       <div className="row-actions">
                         <button onClick={() => openEditForm(task)}>Editar</button>
-                        <button onClick={() => void handleComplete(task, completionUserFor(task))}>
-                          Completar
-                        </button>
+                        <button onClick={() => void handleComplete(task)}>Completar</button>
                         <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
                         <button className="danger-action" onClick={() => void handleDelete(task)}>
                           Eliminar
@@ -816,6 +1065,15 @@ function App() {
         </aside>
       )}
 
+      {pointsFeedback && (
+        <div className={`points-feedback ${pointsFeedback.amount >= 0 ? "points-gain" : "points-loss"}`} role="status">
+          <strong>{pointsFeedback.amount >= 0 ? "+" : ""}{pointsFeedback.amount} Papipuntos</strong>
+          <span>{pointsFeedback.title}</span>
+          <small>{pointsFeedback.userName}</small>
+          {pointsFeedback.levelMessage && <b>{pointsFeedback.levelMessage}</b>}
+        </div>
+      )}
+
       {toast && (
         <div className="toast" role="status" aria-live="polite">
           <span>{toast.message}</span>
@@ -841,7 +1099,7 @@ function App() {
           >
             <TaskForm
               editingTask={editingTask}
-              defaultUser={activeUser}
+              currentUser={currentUser}
               onSave={handleSave}
               onCancel={closeForm}
             />
@@ -850,6 +1108,31 @@ function App() {
       )}
     </div>
   );
+}
+
+function App() {
+  const { user, status, error, login, logout } = useAuth();
+
+  if (status === "loading" && !user) {
+    return (
+      <main className="auth-loading-page">
+        <div className="auth-loading-mark">✓</div>
+        <strong>Abriendo TaskFollower…</strong>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <LoginScreen
+        loading={status === "authenticating"}
+        error={error}
+        onLogin={login}
+      />
+    );
+  }
+
+  return <TaskFollowerApp currentUser={user} onLogout={logout} />;
 }
 
 export default App;

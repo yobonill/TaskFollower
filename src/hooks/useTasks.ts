@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, onValue, ref, remove, set, type Unsubscribe } from "firebase/database";
+import {
+  get,
+  onValue,
+  ref,
+  remove,
+  set,
+  update,
+  type Unsubscribe,
+} from "firebase/database";
+import {
+  getAppUserByName,
+  getAppUserByUid,
+  type AppUserDefinition,
+} from "../config/appUsers";
 import { isFirebaseConfigured } from "../config/firebaseConfig";
 import type {
   CompletedTaskUndo,
@@ -9,39 +22,102 @@ import type {
   UserName,
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
-import { ensureAnonymousAuthentication } from "../services/firebase";
+import { getAuthenticatedFirebaseServices } from "../services/firebase";
 import { getNextDueDate } from "../utils/taskDates";
 
 const CACHE_KEY = "taskFollower.tasks.v1";
 const PENDING_KEY = "taskFollower.pendingOperations.v1";
 
 type PendingOperation =
-  | { id: string; type: "upsert"; task: Task }
-  | { id: string; type: "delete"; taskId: string }
-  | { id: string; type: "replace"; tasks: Task[] };
+  | { id: string; actorUserId?: string; type: "upsert"; task: Task }
+  | { id: string; actorUserId?: string; type: "delete"; taskId: string }
+  | { id: string; actorUserId?: string; type: "replace"; tasks: Task[] };
 
-type LegacyTask = Task & { urgency?: TaskPriority };
+type LegacyTask = Partial<Task> & {
+  id: string;
+  urgency?: TaskPriority;
+};
 
-const normalizeTask = (task: Task): Task => {
-  const legacyTask = task as LegacyTask;
-  const { urgency: legacyUrgency, ...taskWithoutLegacyUrgency } = legacyTask;
+const isUserName = (value: unknown): value is UserName =>
+  value === "Yisel" || value === "Yorki";
+
+const normalizeTask = (taskValue: Task | LegacyTask): Task => {
+  const task = taskValue as LegacyTask;
+  const { urgency: legacyUrgency, ...taskWithoutLegacyUrgency } = task;
+
+  const creatorFromUid = getAppUserByUid(task.createdByUserId);
+  const assigneeFromUid = getAppUserByUid(task.assignedToUserId);
+  const completedByFromUid = getAppUserByUid(task.completedByUserId);
+  const cancelledByFromUid = getAppUserByUid(task.cancelledByUserId);
+
+  const assignedBy: UserName =
+    creatorFromUid?.name ||
+    (isUserName(task.assignedBy) ? task.assignedBy : undefined) ||
+    (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
+    "Yorki";
+  const assignedTo: UserName =
+    assigneeFromUid?.name ||
+    (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
+    assignedBy;
+
   const dueDate =
     typeof task.dueDate === "string" && task.dueDate.trim()
       ? task.dueDate
       : undefined;
+  const recurrence = task.recurrence || { type: "none" as const, interval: 1 };
+  const createdAt = task.createdAt || new Date().toISOString();
+  const estimatedMinutes = Number(task.estimatedMinutes);
 
   return {
     ...taskWithoutLegacyUrgency,
+    id: task.id,
     name: typeof task.name === "string" ? task.name : "",
     description: task.description || "",
-    estimatedMinutes: Math.max(1, Number(task.estimatedMinutes) || 15),
+    estimatedMinutes:
+      Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
+        ? Math.max(1, estimatedMinutes)
+        : undefined,
     dueDate,
     dueTime: dueDate && task.dueTime ? task.dueTime : undefined,
     priority: task.priority || legacyUrgency || undefined,
-    assignedBy: task.assignedBy || task.assignedTo || "Yorki",
-    assignedTo: task.assignedTo || task.assignedBy || "Yorki",
+    assignedBy,
+    assignedTo,
+    createdByUserId:
+      task.createdByUserId || getAppUserByName(assignedBy).uid,
+    assignedToUserId:
+      task.assignedToUserId || getAppUserByName(assignedTo).uid,
+    lastModifiedByUserId:
+      task.lastModifiedByUserId ||
+      task.createdByUserId ||
+      getAppUserByName(assignedBy).uid,
     status: task.status || "pending",
-    recurrence: task.recurrence || { type: "none", interval: 1 },
+    recurrence: {
+      type: recurrence.type || "none",
+      interval: Math.max(1, Number(recurrence.interval) || 1),
+      endDate:
+        typeof recurrence.endDate === "string" && recurrence.endDate.trim()
+          ? recurrence.endDate
+          : undefined,
+    },
+    source: task.source || "migration",
+    createdAt,
+    updatedAt: task.updatedAt || createdAt,
+    completedBy:
+      completedByFromUid?.name ||
+      (isUserName(task.completedBy) ? task.completedBy : undefined),
+    completedByUserId:
+      task.completedByUserId ||
+      (isUserName(task.completedBy)
+        ? getAppUserByName(task.completedBy).uid
+        : undefined),
+    cancelledBy:
+      cancelledByFromUid?.name ||
+      (isUserName(task.cancelledBy) ? task.cancelledBy : undefined),
+    cancelledByUserId:
+      task.cancelledByUserId ||
+      (isUserName(task.cancelledBy)
+        ? getAppUserByName(task.cancelledBy).uid
+        : undefined),
   };
 };
 
@@ -114,13 +190,24 @@ const applyPendingOperations = (
   return [...map.values()];
 };
 
+const needsIdentityMigration = (task: Partial<Task>): boolean =>
+  !task.createdByUserId ||
+  !task.assignedToUserId ||
+  !task.lastModifiedByUserId ||
+  (Boolean(task.completedBy) && !task.completedByUserId) ||
+  (Boolean(task.cancelledBy) && !task.cancelledByUserId) ||
+  !task.source;
+
 export interface UseTasksResult {
   tasks: Task[];
   syncState: SyncState;
   syncMessage: string;
   pendingCount: number;
   saveTask: (task: Task) => Promise<void>;
-  completeTask: (task: Task, completedBy: UserName) => Promise<CompletedTaskUndo>;
+  completeTask: (
+    task: Task,
+    completedBy: AppUserDefinition,
+  ) => Promise<CompletedTaskUndo>;
   undoComplete: (undo: CompletedTaskUndo) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   replaceTasks: (tasks: Task[]) => Promise<void>;
@@ -128,7 +215,9 @@ export interface UseTasksResult {
   retrySync: () => Promise<void>;
 }
 
-export const useTasks = (): UseTasksResult => {
+export const useTasks = (
+  currentUser: AppUserDefinition,
+): UseTasksResult => {
   const [tasks, setTasks] = useState<Task[]>(readCachedTasks);
   const [syncState, setSyncState] = useState<SyncState>(
     isFirebaseConfigured() ? "connecting" : "local",
@@ -141,6 +230,7 @@ export const useTasks = (): UseTasksResult => {
   const [pendingCount, setPendingCount] = useState(readPendingOperations().length);
   const mountedRef = useRef(true);
   const firebaseConnectedRef = useRef(false);
+  const migrationAttemptedRef = useRef(false);
 
   const updateLocalTasks = useCallback((nextTasks: Task[]) => {
     const normalized = nextTasks.map(normalizeTask);
@@ -172,10 +262,17 @@ export const useTasks = (): UseTasksResult => {
         return false;
       }
 
+      if (operation.actorUserId && operation.actorUserId !== currentUser.uid) {
+        return false;
+      }
+
       try {
         setSyncState("saving");
         setSyncMessage("Guardando cambios…");
-        const { database } = await ensureAnonymousAuthentication();
+        const { auth, database } = getAuthenticatedFirebaseServices();
+        if (auth.currentUser?.uid !== currentUser.uid) {
+          throw new Error("La sesión cambió antes de sincronizar.");
+        }
 
         if (operation.type === "upsert") {
           await set(
@@ -204,11 +301,15 @@ export const useTasks = (): UseTasksResult => {
         return false;
       }
     },
-    [removePendingOperation],
+    [currentUser.uid, removePendingOperation],
   );
 
   const retrySync = useCallback(async () => {
     const operations = readPendingOperations();
+    const eligibleOperations = operations.filter(
+      (operation) =>
+        !operation.actorUserId || operation.actorUserId === currentUser.uid,
+    );
 
     if (!isFirebaseConfigured()) {
       setSyncState("local");
@@ -234,7 +335,15 @@ export const useTasks = (): UseTasksResult => {
       return;
     }
 
-    for (const operation of operations) {
+    if (!eligibleOperations.length) {
+      setSyncState("offline");
+      setSyncMessage(
+        "Hay cambios pendientes de otro usuario en este dispositivo. Se sincronizarán cuando esa persona inicie sesión.",
+      );
+      return;
+    }
+
+    for (const operation of eligibleOperations) {
       const succeeded = await executeOperation(operation);
       if (!succeeded) break;
     }
@@ -242,10 +351,13 @@ export const useTasks = (): UseTasksResult => {
 
   const submitOperation = useCallback(
     (operation: PendingOperation) => {
-      // Saving to the local cache and pending queue is the completion point for
-      // the UI. Firebase synchronization runs in the background so an offline
-      // write can never leave a form stuck on “Guardando…”.
-      queueOperation(operation);
+      // Local persistence is the UI completion point. Firebase runs in the
+      // background so an offline write never blocks the task form.
+      const attributedOperation: PendingOperation = {
+        ...operation,
+        actorUserId: operation.actorUserId || currentUser.uid,
+      };
+      queueOperation(attributedOperation);
 
       if (!isFirebaseConfigured()) return;
 
@@ -259,14 +371,17 @@ export const useTasks = (): UseTasksResult => {
         return;
       }
 
-      void executeOperation(operation);
+      void executeOperation(attributedOperation);
     },
-    [executeOperation, queueOperation],
+    [currentUser.uid, executeOperation, queueOperation],
   );
 
   const saveTask = useCallback(
     async (task: Task) => {
-      const normalized = normalizeTask(task);
+      const normalized = normalizeTask({
+        ...task,
+        lastModifiedByUserId: currentUser.uid,
+      });
       const current = readCachedTasks();
       const exists = current.some((item) => item.id === normalized.id);
       const next = exists
@@ -279,41 +394,61 @@ export const useTasks = (): UseTasksResult => {
         task: normalized,
       });
     },
-    [submitOperation, updateLocalTasks],
+    [currentUser.uid, submitOperation, updateLocalTasks],
   );
 
   const completeTask = useCallback(
-    async (task: Task, completedBy: UserName): Promise<CompletedTaskUndo> => {
+    async (
+      task: Task,
+      completedBy: AppUserDefinition,
+    ): Promise<CompletedTaskUndo> => {
       const timestamp = new Date().toISOString();
       const originalTask = normalizeTask(task);
       const completedTask: Task = {
         ...originalTask,
         status: "done",
         completedAt: timestamp,
-        completedBy,
+        completedBy: completedBy.name,
+        completedByUserId: completedBy.uid,
         cancelledAt: undefined,
         cancelledBy: undefined,
+        cancelledByUserId: undefined,
+        lastModifiedByUserId: completedBy.uid,
         updatedAt: timestamp,
       };
       await saveTask(completedTask);
 
       let generatedTaskId: string | undefined;
       if (originalTask.recurrence.type !== "none" && originalTask.dueDate) {
-        generatedTaskId = crypto.randomUUID();
-        const nextTask: Task = {
-          ...originalTask,
-          id: generatedTaskId,
-          dueDate: getNextDueDate(originalTask.dueDate, originalTask.recurrence),
-          status: "pending",
-          completedAt: undefined,
-          completedBy: undefined,
-          cancelledAt: undefined,
-          cancelledBy: undefined,
-          recurrenceSeriesId: originalTask.recurrenceSeriesId || originalTask.id,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
-        await saveTask(nextTask);
+        const nextDueDate = getNextDueDate(
+          originalTask.dueDate,
+          originalTask.recurrence,
+        );
+        const mayCreateNext =
+          !originalTask.recurrence.endDate ||
+          nextDueDate <= originalTask.recurrence.endDate;
+
+        if (mayCreateNext) {
+          generatedTaskId = crypto.randomUUID();
+          const nextTask: Task = {
+            ...originalTask,
+            id: generatedTaskId,
+            dueDate: nextDueDate,
+            status: "pending",
+            source: "recurrence",
+            completedAt: undefined,
+            completedBy: undefined,
+            completedByUserId: undefined,
+            cancelledAt: undefined,
+            cancelledBy: undefined,
+            cancelledByUserId: undefined,
+            lastModifiedByUserId: completedBy.uid,
+            recurrenceSeriesId: originalTask.recurrenceSeriesId || originalTask.id,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+          await saveTask(nextTask);
+        }
       }
 
       return { originalTask, generatedTaskId };
@@ -337,19 +472,28 @@ export const useTasks = (): UseTasksResult => {
         status: "pending",
         completedAt: undefined,
         completedBy: undefined,
+        completedByUserId: undefined,
         cancelledAt: undefined,
         cancelledBy: undefined,
+        cancelledByUserId: undefined,
+        lastModifiedByUserId: currentUser.uid,
         updatedAt: new Date().toISOString(),
       };
       await saveTask(restoredTask);
       if (generatedTaskId) await deleteTask(generatedTaskId);
     },
-    [deleteTask, saveTask],
+    [currentUser.uid, deleteTask, saveTask],
   );
 
   const replaceTasks = useCallback(
     async (nextTasks: Task[]) => {
-      const normalized = nextTasks.map(normalizeTask);
+      const normalized = nextTasks.map((task) =>
+        normalizeTask({
+          ...task,
+          source: task.source || "import",
+          lastModifiedByUserId: currentUser.uid,
+        }),
+      );
       updateLocalTasks(normalized);
       submitOperation({
         id: crypto.randomUUID(),
@@ -357,20 +501,30 @@ export const useTasks = (): UseTasksResult => {
         tasks: normalized,
       });
     },
-    [submitOperation, updateLocalTasks],
+    [currentUser.uid, submitOperation, updateLocalTasks],
   );
 
   const mergeTasks = useCallback(
     async (importedTasks: Task[]) => {
       const map = new Map(readCachedTasks().map((task) => [task.id, task]));
-      importedTasks.forEach((task) => map.set(task.id, normalizeTask(task)));
+      importedTasks.forEach((task) =>
+        map.set(
+          task.id,
+          normalizeTask({
+          ...task,
+          source: task.source || "import",
+          lastModifiedByUserId: currentUser.uid,
+        }),
+        ),
+      );
       await replaceTasks([...map.values()]);
     },
-    [replaceTasks],
+    [currentUser.uid, replaceTasks],
   );
 
   useEffect(() => {
     mountedRef.current = true;
+    migrationAttemptedRef.current = false;
     if (!isFirebaseConfigured()) return () => undefined;
 
     let unsubscribeTasks: Unsubscribe | undefined;
@@ -380,32 +534,62 @@ export const useTasks = (): UseTasksResult => {
       try {
         setSyncState("connecting");
         setSyncMessage("Conectando con Firebase…");
-        const { database } = await ensureAnonymousAuthentication();
+        const { auth, database } = getAuthenticatedFirebaseServices();
+        if (auth.currentUser?.uid !== currentUser.uid) {
+          throw new Error("La sesión activa no coincide con el usuario de la aplicación.");
+        }
 
-        unsubscribeConnection = onValue(ref(database, ".info/connected"), (snapshot) => {
-          if (!mountedRef.current) return;
-          const connected = snapshot.val() === true;
-          firebaseConnectedRef.current = connected;
-          if (!connected) {
-            setSyncState("offline");
-            setSyncMessage(
-              "Sin conexión: los cambios permanecerán guardados en este dispositivo.",
-            );
-          } else {
-            void retrySync();
-          }
-        });
+        unsubscribeConnection = onValue(
+          ref(database, ".info/connected"),
+          (snapshot) => {
+            if (!mountedRef.current) return;
+            const connected = snapshot.val() === true;
+            firebaseConnectedRef.current = connected;
+            if (!connected) {
+              setSyncState("offline");
+              setSyncMessage(
+                "Sin conexión: los cambios permanecerán guardados en este dispositivo.",
+              );
+            } else {
+              void retrySync();
+            }
+          },
+        );
 
         unsubscribeTasks = onValue(
           ref(database, "tasks"),
           (snapshot) => {
             if (!mountedRef.current) return;
-            const remoteTasks = recordToTasks(snapshot.val());
+            const rawRecord =
+              snapshot.val() && typeof snapshot.val() === "object"
+                ? (snapshot.val() as Record<string, Partial<Task>>)
+                : {};
+            const remoteTasks = recordToTasks(rawRecord);
             const merged = applyPendingOperations(
               remoteTasks,
               readPendingOperations(),
             );
             updateLocalTasks(merged);
+
+            if (
+              !migrationAttemptedRef.current &&
+              !readPendingOperations().length
+            ) {
+              migrationAttemptedRef.current = true;
+              const migratedEntries = remoteTasks.filter((task) =>
+                needsIdentityMigration(rawRecord[task.id] || {}),
+              );
+              if (migratedEntries.length) {
+                const migrationUpdate = Object.fromEntries(
+                  migratedEntries.map((task) => [task.id, stripUndefined(task)]),
+                );
+                void update(ref(database, "tasks"), migrationUpdate).catch(() => {
+                  // The application remains usable; migration retries on a later load.
+                  migrationAttemptedRef.current = false;
+                });
+              }
+            }
+
             if (!readPendingOperations().length) {
               setSyncState("synced");
               setSyncMessage("Todos los cambios están sincronizados.");
@@ -423,7 +607,7 @@ export const useTasks = (): UseTasksResult => {
         firebaseConnectedRef.current = false;
         if (!mountedRef.current) return;
         setSyncState("error");
-        setSyncMessage("No se pudo conectar con Firebase.");
+        setSyncMessage("No se pudo conectar con Firebase con esta sesión.");
       }
     };
 
@@ -435,7 +619,7 @@ export const useTasks = (): UseTasksResult => {
       unsubscribeTasks?.();
       unsubscribeConnection?.();
     };
-  }, [retrySync, updateLocalTasks]);
+  }, [currentUser.uid, retrySync, updateLocalTasks]);
 
   return {
     tasks,

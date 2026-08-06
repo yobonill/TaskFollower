@@ -1,77 +1,64 @@
-# Firebase setup
+# Firebase setup for TaskFollower
 
-This app uses Firebase Realtime Database only for shared task synchronization. The website itself remains a static Vite/React build hosted by GitHub Pages.
+TaskFollower remains a static React application hosted on GitHub Pages. Firebase is used only for Authentication and Realtime Database synchronization.
 
-## 1. Create the Firebase project
+## 1. Web application
 
-1. Open the Firebase Console.
-2. Select **Create a project**.
-3. Name it something such as `app-task-follower`.
-4. Google Analytics is optional and can be disabled for this project.
+In Firebase Console:
 
-## 2. Register the web application
+1. Open **Project settings**.
+2. Under **Your apps**, register a Web app if it does not already exist.
+3. Copy the Firebase configuration into `src/config/firebaseConfig.ts`.
+4. Do not enable Firebase Hosting; GitHub Pages hosts this project.
 
-1. In **Project Overview**, click the web icon `</>`.
-2. Use a name such as `TaskFollower Web`.
-3. Firebase Hosting is not required because GitHub Pages will host the site.
-4. Register the app.
-5. Copy the generated `firebaseConfig` values.
-6. Paste them into:
+## 2. Realtime Database
 
-   `src/config/firebaseConfig.ts`
+1. Open **Realtime Database**.
+2. Create the database.
+3. Copy its URL into the `databaseURL` field in `src/config/firebaseConfig.ts`.
 
-Make sure `databaseURL` is present. If it is not in the first config shown, create the Realtime Database first and then copy the updated configuration from **Project settings > Your apps**.
+The app stores data under:
 
-## 3. Create the Realtime Database
+- `/tasks`
+- `/papipoints/transactions`
+- `/papipoints/rewards`
 
-1. Open **Build > Realtime Database**.
-2. Click **Create Database**.
-3. Select a region near the users.
-4. Choose **Locked mode**.
-5. Open the **Rules** tab and replace the rules with:
+## 3. Email/Password authentication
 
-```json
-{
-  "rules": {
-    ".read": "auth != null",
-    ".write": "auth != null"
-  }
-}
-```
+1. Open **Authentication → Sign-in method**.
+2. Click **Add new provider**.
+3. Select **Email/Password**.
+4. Enable Email/Password and save.
+5. Under **Authentication → Users**, create:
+   - `yisel@taskfollower.invalid`
+   - `yorki@taskfollower.invalid`
+6. Use the private passwords selected for each person. Never place passwords in the source code.
 
-6. Click **Publish**.
+The configured Firebase UIDs are:
 
-A copy of these rules is included as `firebase-database-rules.json`.
+- Yisel: `Z0Kf2S6iCvVOYQycexiJoPE6sPG2`
+- Yorki: `iF4VXsQ31TT12A44grdEvRAni9S2`
 
-## 4. Enable invisible anonymous authentication
+## 4. Database rules
 
-1. Open **Build > Authentication**.
-2. Click **Get started** if necessary.
-3. Open **Sign-in method**.
-4. Enable **Anonymous**.
-5. Save.
+After confirming both password accounts can log in, publish the contents of `firebase-database-rules.json` under **Realtime Database → Rules**.
 
-The application will sign each browser in automatically. Yisel/Yorki remains the visible task filter and assigner selection; there is no login screen.
+The rules restrict all reads and writes to the two exact Firebase UIDs.
 
-## 5. Run locally
+## 5. Disable anonymous authentication
+
+Only after the new deployment and both accounts have been tested:
+
+1. Open **Authentication → Sign-in method**.
+2. Open **Anonymous**.
+3. Disable it.
+
+## 6. Local and production tests
 
 ```bash
 npm install
+npm run build
 npm run dev
 ```
 
-The terminal will show a local URL, normally `http://localhost:5173`.
-
-## 6. Publish through GitHub Pages
-
-1. Create a GitHub repository and push this project to its `main` branch.
-2. In the GitHub repository, open **Settings > Pages**.
-3. Under **Build and deployment**, select **GitHub Actions** as the source.
-4. Push to `main` again if the deployment workflow has not started.
-5. Open the URL displayed by the `Deploy GitHub Pages` workflow.
-
-The included `.github/workflows/deploy-pages.yml` builds and publishes the site automatically.
-
-## Important scope note
-
-These simple rules allow any anonymously authenticated copy of this web application to use the database. This matches the current private-household/no-login scope, but it is not strong identity-based security for a public multi-user product.
+After local validation, commit and push to `master`. The included GitHub Actions workflow deploys the static build to GitHub Pages.

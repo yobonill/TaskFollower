@@ -5,6 +5,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { getAppUserByName, type AppUserDefinition } from "../config/appUsers";
 import {
   USERS,
   type RecurrenceType,
@@ -20,7 +21,7 @@ import { toDateInputValue } from "../utils/taskDates";
 
 interface TaskFormProps {
   editingTask: Task | null;
-  defaultUser: UserName;
+  currentUser: AppUserDefinition;
   onSave: (task: Task, createAnother: boolean) => Promise<void>;
   onCancel: () => void;
 }
@@ -32,10 +33,10 @@ interface FormState {
   dueDate: string;
   dueTime: string;
   priority: TaskPriority | "";
-  assignedBy: UserName;
   assignedTo: UserName;
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
+  recurrenceEndDate: string;
 }
 
 interface SavedDefaults {
@@ -136,13 +137,13 @@ const createInitialState = (defaultUser: UserName): FormState => {
     dueDate: "",
     dueTime: "",
     priority: "",
-    assignedBy: defaultUser,
     assignedTo:
       defaults.assignedTo === "Yisel" || defaults.assignedTo === "Yorki"
         ? defaults.assignedTo
         : defaultUser,
     recurrenceType: "none",
     recurrenceInterval: "1",
+    recurrenceEndDate: "",
   };
 };
 
@@ -170,10 +171,6 @@ const readDraft = (defaultUser: UserName): FormState | null => {
         parsed.priority === "critical"
           ? parsed.priority
           : "",
-      assignedBy:
-        parsed.assignedBy === "Yisel" || parsed.assignedBy === "Yorki"
-          ? parsed.assignedBy
-          : defaultUser,
       assignedTo:
         parsed.assignedTo === "Yisel" || parsed.assignedTo === "Yorki"
           ? parsed.assignedTo
@@ -186,10 +183,11 @@ const readDraft = (defaultUser: UserName): FormState | null => {
 
 export function TaskForm({
   editingTask,
-  defaultUser,
+  currentUser,
   onSave,
   onCancel,
 }: TaskFormProps) {
+  const defaultUser = currentUser.name;
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<FormState>(() =>
     editingTask
@@ -237,14 +235,14 @@ export function TaskForm({
     setForm({
       name: editingTask.name,
       description: editingTask.description,
-      estimatedMinutes: String(editingTask.estimatedMinutes),
+      estimatedMinutes: editingTask.estimatedMinutes ? String(editingTask.estimatedMinutes) : "",
       dueDate: editingTask.dueDate || "",
       dueTime: editingTask.dueTime || "",
       priority: editingTask.priority || "",
-      assignedBy: editingTask.assignedBy,
       assignedTo: editingTask.assignedTo,
       recurrenceType: editingTask.recurrence.type,
       recurrenceInterval: String(editingTask.recurrence.interval),
+      recurrenceEndDate: editingTask.recurrence.endDate || "",
     });
   }, [defaultUser, editingTask]);
 
@@ -290,27 +288,40 @@ export function TaskForm({
       id: editingTask?.id || crypto.randomUUID(),
       name: form.name.trim(),
       description: form.description.trim(),
-      estimatedMinutes: Math.max(1, Number(form.estimatedMinutes) || 15),
+      estimatedMinutes:
+        form.estimatedMinutes.trim() && Number(form.estimatedMinutes) > 0
+          ? Math.max(1, Number(form.estimatedMinutes))
+          : undefined,
       dueDate: form.dueDate || undefined,
       dueTime: form.dueDate && form.dueTime ? form.dueTime : undefined,
       priority: form.priority || undefined,
-      assignedBy: form.assignedBy,
+      assignedBy: editingTask?.assignedBy || currentUser.name,
       assignedTo: form.assignedTo,
+      createdByUserId: editingTask?.createdByUserId || currentUser.uid,
+      assignedToUserId: getAppUserByName(form.assignedTo).uid,
+      lastModifiedByUserId: currentUser.uid,
       status: editingTask?.status || "pending",
       recurrence: {
         type: form.recurrenceType,
         interval: Math.max(1, Number(form.recurrenceInterval) || 1),
+        endDate:
+          form.recurrenceType !== "none" && form.recurrenceEndDate
+            ? form.recurrenceEndDate
+            : undefined,
       },
       recurrenceSeriesId:
         form.recurrenceType === "none"
           ? undefined
           : editingTask?.recurrenceSeriesId || editingTask?.id || crypto.randomUUID(),
+      source: editingTask?.source || "manual",
       createdAt: editingTask?.createdAt || timestamp,
       updatedAt: timestamp,
       completedAt: editingTask?.completedAt,
       completedBy: editingTask?.completedBy,
+      completedByUserId: editingTask?.completedByUserId,
       cancelledAt: editingTask?.cancelledAt,
       cancelledBy: editingTask?.cancelledBy,
+      cancelledByUserId: editingTask?.cancelledByUserId,
     };
   };
 
@@ -337,6 +348,7 @@ export function TaskForm({
           priority: "",
           recurrenceType: "none",
           recurrenceInterval: "1",
+          recurrenceEndDate: "",
         };
         setForm(nextState);
         localStorage.setItem(DRAFT_KEY, JSON.stringify(nextState));
@@ -431,6 +443,12 @@ export function TaskForm({
           ))}
         </div>
       </fieldset>
+
+      <p className="task-creator-note">
+        {editingTask
+          ? `Creada por ${editingTask.assignedBy}`
+          : `Será creada por ${currentUser.name}`}
+      </p>
 
       <fieldset className="quick-group">
         <legend>Fecha límite <strong className="required-mark">Requerida</strong></legend>
@@ -593,18 +611,6 @@ export function TaskForm({
             </label>
 
             <label className="field">
-              <span>Asignada por</span>
-              <select
-                value={form.assignedBy}
-                onChange={(event) => update("assignedBy", event.target.value as UserName)}
-              >
-                {USERS.map((user) => (
-                  <option key={user}>{user}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field">
               <span>Tiempo exacto (minutos)</span>
               <input
                 min="1"
@@ -640,6 +646,18 @@ export function TaskForm({
                 value={form.recurrenceInterval}
                 onChange={(event) => update("recurrenceInterval", event.target.value)}
               />
+            </label>
+
+            <label className="field">
+              <span>Repetir hasta (opcional)</span>
+              <input
+                type="date"
+                disabled={form.recurrenceType === "none"}
+                min={form.dueDate || undefined}
+                value={form.recurrenceEndDate}
+                onChange={(event) => update("recurrenceEndDate", event.target.value)}
+              />
+              <small>La tarea no se recreará después de esta fecha.</small>
             </label>
           </div>
         </div>

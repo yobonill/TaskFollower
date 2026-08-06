@@ -96,7 +96,8 @@ export const formatDueDate = (task: Task): string => {
   return `${dateText}, ${timeText}`;
 };
 
-export const formatDuration = (minutes: number): string => {
+export const formatDuration = (minutes?: number): string => {
+  if (!minutes || minutes <= 0) return "Sin estimar";
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
