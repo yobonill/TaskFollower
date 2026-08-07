@@ -20,6 +20,23 @@ export interface PapipointsTransaction {
   createdByUserId: string;
 }
 
+export type PapipointsTaskOutcome = "rewarded" | "penalized";
+
+/**
+ * One task can resolve its Papipuntos lifecycle only once. The resolution is
+ * shared by all devices and, for shared tasks, contains the amount applied to
+ * each participant.
+ */
+export interface PapipointsTaskResolution {
+  taskId: string;
+  claimId: string;
+  outcome: PapipointsTaskOutcome;
+  recipientAmounts: Record<string, number>;
+  resolvedAt: string;
+  resolvedByUserId: string;
+  description: string;
+}
+
 export interface PapipointsReward {
   id: string;
   name: string;

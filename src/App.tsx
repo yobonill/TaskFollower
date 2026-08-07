@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -11,15 +10,16 @@ import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
 import { TASK_FORM_DRAFT_KEY, TaskForm } from "./components/TaskForm";
 import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
-import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
+import { type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
-import { usePapipoints } from "./hooks/usePapipoints";
+import { usePapipoints, type PapipointsChange } from "./hooks/usePapipoints";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useTasks } from "./hooks/useTasks";
 import { useTemplates } from "./hooks/useTemplates";
 import {
   USERS,
   type Task,
+  type TaskAssignee,
   type TaskExport,
   type TaskPriority,
   type UserFilter,
@@ -36,8 +36,9 @@ import {
   isTaskOverdue,
   sortPendingTasks,
 } from "./utils/taskDates";
-import { getLevelFromPapipoints } from "./utils/papipoints";
+import { getLevelFromPapipoints, isCompletedEarly } from "./utils/papipoints";
 import { findSimilarOpenTasks } from "./utils/taskSimilarity";
+import { getAssigneeUserIds, isTaskAssignedTo } from "./utils/taskAssignment";
 import "./styles.css";
 
 const USER_FILTER_KEY = "taskFollower.taskFilter.v1";
@@ -54,9 +55,10 @@ interface ToastState {
 }
 
 interface PointsFeedbackState {
-  amount: number;
+  amountText: string;
+  positive: boolean;
   title: string;
-  userName: UserName;
+  userName: string;
   levelMessage?: string;
 }
 
@@ -111,12 +113,11 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     rewards,
     profiles,
     pendingCount: papipointsPendingCount,
-    awardTaskCreation,
-    removeTaskCreationReward,
+    removePendingTaskCreationReward,
     awardTaskCompletion,
     removeTaskCompletionRewards,
-    removeAllTaskTransactions,
     applyOverduePenalty,
+    hasTaskOverduePenalty,
     saveReward,
     deleteReward,
     redeemReward,
@@ -151,7 +152,6 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
   const pointsTimerRef = useRef<number | null>(null);
-  const overdueCheckRef = useRef(new Set<string>());
 
   const totalPendingCount = taskPendingCount + papipointsPendingCount + templatesPendingCount;
 
@@ -161,33 +161,78 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     toastTimerRef.current = window.setTimeout(() => setToast(null), duration);
   }, []);
 
-  const showPointsFeedback = useCallback(
-    (amount: number, title: string, userName: UserName) => {
-      if (!amount) return;
+  const buildLevelMessage = useCallback(
+    (amount: number, userName: UserName): string | undefined => {
       const currentBalance = profiles[userName].balance;
       const previousBalance = Math.max(0, currentBalance);
       const nextBalance = Math.max(0, previousBalance + amount);
       const previousLevel = getLevelFromPapipoints(previousBalance);
       const nextLevel = getLevelFromPapipoints(nextBalance);
-      let levelMessage: string | undefined;
-      if (nextLevel > previousLevel) levelMessage = `¡Subiste al nivel ${nextLevel}!`;
-      if (nextLevel < previousLevel) levelMessage = `Ahora estás en el nivel ${nextLevel}.`;
+      if (nextLevel > previousLevel) return `${userName}: ¡subió al nivel ${nextLevel}!`;
+      if (nextLevel < previousLevel) return `${userName}: ahora está en el nivel ${nextLevel}.`;
+      return undefined;
+    },
+    [profiles],
+  );
+
+  const showPointsFeedback = useCallback(
+    (amount: number, title: string, userName: UserName) => {
+      if (!amount) return;
+      const levelMessage = buildLevelMessage(amount, userName);
 
       if (pointsTimerRef.current) window.clearTimeout(pointsTimerRef.current);
-      setPointsFeedback({ amount, title, userName, levelMessage });
+      setPointsFeedback({
+        amountText: `${amount >= 0 ? "+" : ""}${amount} Papipuntos`,
+        positive: amount >= 0,
+        title,
+        userName,
+        levelMessage,
+      });
       pointsTimerRef.current = window.setTimeout(
         () => setPointsFeedback(null),
         levelMessage ? 5200 : 3400,
       );
     },
-    [profiles],
+    [buildLevelMessage],
+  );
+
+  const showPointsChangesFeedback = useCallback(
+    (changes: PapipointsChange[], title: string) => {
+      const relevant = changes.filter((change) => change.amount !== 0);
+      if (!relevant.length) return;
+      if (relevant.length === 1) {
+        const change = relevant[0];
+        showPointsFeedback(change.amount, title, change.userName);
+        return;
+      }
+
+      const levelMessages = relevant
+        .map((change) => buildLevelMessage(change.amount, change.userName))
+        .filter((message): message is string => Boolean(message));
+
+      if (pointsTimerRef.current) window.clearTimeout(pointsTimerRef.current);
+      setPointsFeedback({
+        amountText: relevant
+          .map((change) => `${change.userName}: ${change.amount >= 0 ? "+" : ""}${change.amount} PP`)
+          .join(" · "),
+        positive: relevant.every((change) => change.amount >= 0),
+        title,
+        userName: "Tarea compartida",
+        levelMessage: levelMessages.length ? levelMessages.join(" · ") : undefined,
+      });
+      pointsTimerRef.current = window.setTimeout(
+        () => setPointsFeedback(null),
+        levelMessages.length ? 6200 : 4400,
+      );
+    },
+    [buildLevelMessage, showPointsFeedback],
   );
 
   const filteredTasks = useMemo(
     () =>
       selectedUser === "all"
         ? tasks
-        : tasks.filter((task) => task.assignedTo === selectedUser),
+        : tasks.filter((task) => isTaskAssignedTo(task, selectedUser)),
     [selectedUser, tasks],
   );
 
@@ -296,24 +341,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     (task) => !task.estimatedMinutes,
   ).length;
 
-  useEffect(() => {
-    const eligible = tasks.filter(
-      (task) =>
-        task.status === "pending" &&
-        isTaskDataComplete(task) &&
-        isTaskOverdue(task),
-    );
 
-    for (const task of eligible) {
-      if (overdueCheckRef.current.has(task.id)) continue;
-      overdueCheckRef.current.add(task.id);
-      void applyOverduePenalty(task).then((amount) => {
-        if (amount) {
-          showPointsFeedback(amount, `Tarea vencida: ${task.name}`, task.assignedTo);
-        }
-      });
-    }
-  }, [applyOverduePenalty, showPointsFeedback, tasks]);
 
   const changeSelectedUser = (value: UserFilter) => {
     setSelectedUser(value);
@@ -342,11 +370,6 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     const complete = isTaskDataComplete(task);
     await saveTask(task);
 
-    if (complete) {
-      const points = await awardTaskCreation(task);
-      if (points) showPointsFeedback(points, "Tarea creada", currentUser.name);
-    }
-
     showToast(
       {
         message: complete
@@ -369,6 +392,23 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleSave = async (task: Task, createAnother: boolean) => {
     const wasEditing = Boolean(editingTask);
+
+    // Editing the deadline of an already-overdue task is equivalent to
+    // postponing it: the missed deadline must be resolved before the date can
+    // be moved or removed.
+    if (
+      editingTask &&
+      isTaskOverdue(editingTask) &&
+      (task.dueDate !== editingTask.dueDate ||
+        task.dueTime !== editingTask.dueTime)
+    ) {
+      const changes = await applyOverduePenalty(editingTask, true);
+      showPointsChangesFeedback(
+        changes,
+        `Tarea vencida: ${editingTask.name}`,
+      );
+    }
+
     await persistTask(task, wasEditing);
     if (reviewEditing) clearSimilarReview(true);
     if (!createAnother) closeForm();
@@ -400,31 +440,72 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleComplete = async (task: Task) => {
     const completedAt = new Date().toISOString();
+    const wasOverdue = isTaskOverdue(task);
+    const hadPreviousPenalty = hasTaskOverduePenalty(task.id);
     const undo = await completeTask(task, currentUser);
-    const points = await awardTaskCompletion(task, completedAt, currentUser);
-    if (points) {
-      showPointsFeedback(
-        points,
-        points > (task.priority ? { low: 5, normal: 10, high: 20, critical: 35 }[task.priority] : 0)
+    const pointChanges = await awardTaskCompletion(task, completedAt, currentUser);
+
+    const positiveChanges = pointChanges.filter((change) => change.amount > 0);
+    const negativeChanges = pointChanges.filter((change) => change.amount < 0);
+    const hasPenaltyHistory = hadPreviousPenalty || hasTaskOverduePenalty(task.id);
+    const early = Boolean(
+      positiveChanges.length &&
+        !wasOverdue &&
+        task.priority &&
+        isCompletedEarly(task, completedAt),
+    );
+
+    showPointsChangesFeedback(
+      pointChanges,
+      negativeChanges.length
+        ? "Penalización acumulada por vencimiento"
+        : early
           ? "Tarea completada antes de tiempo"
           : "Tarea completada",
-        currentUser.name,
-      );
+    );
+
+    const totalPositive = positiveChanges.reduce(
+      (total, change) => total + change.amount,
+      0,
+    );
+
+    let message = "Tarea completada.";
+    if (negativeChanges.length) {
+      message =
+        "Tarea completada. Se descontaron los Papipuntos acumulados por los días de atraso. No se otorgaron Papipuntos por completar esta tarea.";
+    } else if (hasPenaltyHistory) {
+      message =
+        "Tarea completada sin recompensa. Esta tarea ya había recibido penalizaciones por vencimiento, por eso no otorga Papipuntos al completarse.";
+    } else if (!positiveChanges.length) {
+      message =
+        "Tarea completada. Su recompensa de Papipuntos ya había sido procesada y no se generan puntos adicionales.";
+    } else if (task.assignedTo === "Ambos" && positiveChanges.length > 1) {
+      message = "Tarea compartida completada. Ambos recibieron Papipuntos.";
+    } else if (totalPositive > 0) {
+      message = `Tarea completada. Ganaste ${totalPositive} Papipuntos.`;
     }
 
     showToast({
-      message: points
-        ? `Tarea completada. Ganaste ${points} Papipuntos.`
-        : "Tarea completada.",
+      message,
       actionLabel: "Deshacer",
       action: async () => {
         const removed = await removeTaskCompletionRewards(task.id);
         await undoComplete(undo);
-        if (removed) showPointsFeedback(removed, "Se deshizo la tarea completada", currentUser.name);
-        showToast({ message: "La tarea volvió a estar pendiente." }, 3200);
+        showPointsChangesFeedback(removed, "Se deshizo la tarea completada");
+        showToast(
+          {
+            message: removed.length
+              ? "La tarea volvió a estar pendiente y se retiró su recompensa."
+              : hasPenaltyHistory || negativeChanges.length
+                ? "La tarea volvió a estar pendiente. Las penalizaciones por vencimiento se mantienen."
+                : "La tarea volvió a estar pendiente.",
+          },
+          4200,
+        );
       },
     });
   };
+
 
   const handleDuplicate = async (task: Task) => {
     const timestamp = new Date().toISOString();
@@ -435,7 +516,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       source: "duplicate",
       assignedBy: currentUser.name,
       createdByUserId: currentUser.uid,
-      assignedToUserId: getAppUserByName(task.assignedTo).uid,
+      assignedToUserId:
+        task.assignedTo === "Ambos" ? undefined : getAssigneeUserIds(task.assignedTo)[0],
+      assignedToUserIds: getAssigneeUserIds(task.assignedTo),
       lastModifiedByUserId: currentUser.uid,
       completedAt: undefined,
       completedBy: undefined,
@@ -452,11 +535,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     showToast({ message: "Tarea duplicada. No genera Papipuntos por creación." }, 4200);
   };
 
-  const handleReassign = async (task: Task, assignedTo: UserName) => {
+  const handleReassign = async (task: Task, assignedTo: TaskAssignee) => {
     await saveTask({
       ...task,
       assignedTo,
-      assignedToUserId: getAppUserByName(assignedTo).uid,
+      assignedToUserId:
+        assignedTo === "Ambos" ? undefined : getAssigneeUserIds(assignedTo)[0],
+      assignedToUserIds: getAssigneeUserIds(assignedTo),
       lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
@@ -465,10 +550,8 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handlePostpone = async (task: Task, dueDate: string) => {
     if (isTaskOverdue(task)) {
-      const amount = await applyOverduePenalty(task, true);
-      if (amount) {
-        showPointsFeedback(amount, `Tarea vencida: ${task.name}`, task.assignedTo);
-      }
+      const changes = await applyOverduePenalty(task, true);
+      showPointsChangesFeedback(changes, `Tarea vencida: ${task.name}`);
     }
 
     await saveTask({
@@ -481,18 +564,24 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
-    overdueCheckRef.current.delete(task.id);
     showToast({
       message: isTaskOverdue(task)
-        ? "Tarea pospuesta. La penalización por vencimiento se mantiene."
-        : "Fecha límite actualizada sin penalización.",
-    }, 3800);
+        ? "Tarea pospuesta. Se aplicaron las penalizaciones acumuladas por los días de atraso. Esta tarea ya no otorgará Papipuntos al completarse; si vuelve a vencerse, acumulará nuevas penalizaciones."
+        : "Fecha límite actualizada sin penalización. La tarea mantiene su elegibilidad para recibir Papipuntos.",
+    }, 5200);
   };
 
   const handleCancelTask = async (task: Task) => {
     if (!window.confirm(`¿Cancelar la tarea “${task.name}”?`)) return;
     const original = task;
-    const removed = await removeTaskCreationReward(task.id);
+
+    let overdueChanges: PapipointsChange[] = [];
+    if (isTaskOverdue(task)) {
+      overdueChanges = await applyOverduePenalty(task, true);
+      showPointsChangesFeedback(overdueChanges, `Tarea vencida: ${task.name}`);
+    }
+
+    const removedLegacyCreation = await removePendingTaskCreationReward(task.id);
     await saveTask({
       ...task,
       status: "cancelled",
@@ -502,9 +591,17 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
-    if (removed) showPointsFeedback(removed, "Tarea cancelada", currentUser.name);
+    if (removedLegacyCreation && !overdueChanges.length) {
+      showPointsFeedback(
+        removedLegacyCreation.amount,
+        "Se corrigió el bono de creación pendiente",
+        removedLegacyCreation.userName,
+      );
+    }
     showToast({
-      message: "Tarea cancelada.",
+      message: overdueChanges.length
+        ? "Tarea cancelada. La penalización por vencimiento se mantiene."
+        : "Tarea cancelada.",
       actionLabel: "Deshacer",
       action: async () => {
         await saveTask({
@@ -516,11 +613,14 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           lastModifiedByUserId: currentUser.uid,
           updatedAt: new Date().toISOString(),
         });
-        if (isTaskDataComplete(original)) {
-          const restored = await awardTaskCreation(original);
-          if (restored) showPointsFeedback(restored, "Tarea restaurada", currentUser.name);
-        }
-        showToast({ message: "La tarea fue restaurada." }, 3200);
+        showToast(
+          {
+            message: overdueChanges.length
+              ? "La tarea fue restaurada. La penalización por vencimiento se mantiene."
+              : "La tarea fue restaurada.",
+          },
+          3800,
+        );
       },
     });
   };
@@ -536,21 +636,25 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       updatedAt: new Date().toISOString(),
     };
     await saveTask(restoredTask);
-    if (isTaskDataComplete(restoredTask)) {
-      const restored = await awardTaskCreation(restoredTask);
-      if (restored) showPointsFeedback(restored, "Tarea restaurada", currentUser.name);
-    }
     showToast({ message: "Tarea restaurada." }, 3200);
   };
 
   const handleDelete = async (task: Task) => {
     const taskName = task.name.trim() || "Tarea sin nombre";
     if (!window.confirm(`¿Eliminar permanentemente la tarea “${taskName}”?`)) return;
-    await removeAllTaskTransactions(task.id);
+
+    let overdueChanges: PapipointsChange[] = [];
+    if (isTaskOverdue(task)) {
+      overdueChanges = await applyOverduePenalty(task, true);
+      showPointsChangesFeedback(overdueChanges, `Tarea vencida: ${task.name}`);
+    }
+
     await deleteTask(task.id);
     showToast({
-      message: "Tarea eliminada junto con sus movimientos de Papipuntos.",
-    }, 4200);
+      message: overdueChanges.length
+        ? "Tarea eliminada. La penalización aplicada permanece en el historial de Papipuntos."
+        : "Tarea eliminada. Los movimientos de Papipuntos ya resueltos se conservan.",
+    }, 4800);
   };
 
   const handleInstall = async () => {
@@ -583,7 +687,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -1305,8 +1409,8 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       )}
 
       {pointsFeedback && (
-        <div className={`points-feedback ${pointsFeedback.amount >= 0 ? "points-gain" : "points-loss"}`} role="status">
-          <strong>{pointsFeedback.amount >= 0 ? "+" : ""}{pointsFeedback.amount} Papipuntos</strong>
+        <div className={`points-feedback ${pointsFeedback.positive ? "points-gain" : "points-loss"}`} role="status">
+          <strong>{pointsFeedback.amountText}</strong>
           <span>{pointsFeedback.title}</span>
           <small>{pointsFeedback.userName}</small>
           {pointsFeedback.levelMessage && <b>{pointsFeedback.levelMessage}</b>}

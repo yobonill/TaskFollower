@@ -19,11 +19,13 @@ import type {
   SyncState,
   Task,
   TaskPriority,
+  TaskAssignee,
   UserName,
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
 import { getNextDueDate } from "../utils/taskDates";
+import { getAssigneeUserIds } from "../utils/taskAssignment";
 
 const CACHE_KEY = "taskFollower.tasks.v1";
 const PENDING_KEY = "taskFollower.pendingOperations.v1";
@@ -41,25 +43,45 @@ type LegacyTask = Partial<Task> & {
 const isUserName = (value: unknown): value is UserName =>
   value === "Yisel" || value === "Yorki";
 
+const isTaskAssignee = (value: unknown): value is TaskAssignee =>
+  isUserName(value) || value === "Ambos";
+
 const normalizeTask = (taskValue: Task | LegacyTask): Task => {
   const task = taskValue as LegacyTask;
   const { urgency: legacyUrgency, ...taskWithoutLegacyUrgency } = task;
 
   const creatorFromUid = getAppUserByUid(task.createdByUserId);
-  const assigneeFromUid = getAppUserByUid(task.assignedToUserId);
   const completedByFromUid = getAppUserByUid(task.completedByUserId);
   const cancelledByFromUid = getAppUserByUid(task.cancelledByUserId);
+
+  const uidAssignees = Array.isArray(task.assignedToUserIds)
+    ? task.assignedToUserIds
+        .map((uid) => getAppUserByUid(uid))
+        .filter((user): user is AppUserDefinition => Boolean(user))
+    : [];
+  const assigneeFromLegacyUid = getAppUserByUid(task.assignedToUserId);
 
   const assignedBy: UserName =
     creatorFromUid?.name ||
     (isUserName(task.assignedBy) ? task.assignedBy : undefined) ||
     (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
     "Yorki";
-  const assignedTo: UserName =
-    assigneeFromUid?.name ||
-    (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
-    assignedBy;
 
+  let assignedTo: TaskAssignee;
+  if (
+    task.assignedTo === "Ambos" ||
+    new Set(uidAssignees.map((user) => user.name)).size > 1
+  ) {
+    assignedTo = "Ambos";
+  } else {
+    assignedTo =
+      assigneeFromLegacyUid?.name ||
+      uidAssignees[0]?.name ||
+      (isTaskAssignee(task.assignedTo) ? task.assignedTo : undefined) ||
+      assignedBy;
+  }
+
+  const assignedToUserIds = getAssigneeUserIds(assignedTo);
   const dueDate =
     typeof task.dueDate === "string" && task.dueDate.trim()
       ? task.dueDate
@@ -85,23 +107,32 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     createdByUserId:
       task.createdByUserId || getAppUserByName(assignedBy).uid,
     assignedToUserId:
-      task.assignedToUserId || getAppUserByName(assignedTo).uid,
+      assignedTo === "Ambos" ? undefined : assignedToUserIds[0],
+    assignedToUserIds,
     lastModifiedByUserId:
       task.lastModifiedByUserId ||
       task.createdByUserId ||
       getAppUserByName(assignedBy).uid,
     status: task.status || "pending",
     recurrence: {
-      type: recurrence.type || "none",
+      type: dueDate ? recurrence.type || "none" : "none",
       interval: Math.max(1, Number(recurrence.interval) || 1),
       endDate:
-        typeof recurrence.endDate === "string" && recurrence.endDate.trim()
+        dueDate &&
+        recurrence.type !== "none" &&
+        typeof recurrence.endDate === "string" &&
+        recurrence.endDate.trim()
           ? recurrence.endDate
           : undefined,
     },
+    recurrenceSeriesId:
+      dueDate && recurrence.type !== "none"
+        ? task.recurrenceSeriesId
+        : undefined,
     source: task.source || "migration",
     createdAt,
     updatedAt: task.updatedAt || createdAt,
+    completedAt: task.completedAt,
     completedBy:
       completedByFromUid?.name ||
       (isUserName(task.completedBy) ? task.completedBy : undefined),
@@ -110,6 +141,7 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
       (isUserName(task.completedBy)
         ? getAppUserByName(task.completedBy).uid
         : undefined),
+    cancelledAt: task.cancelledAt,
     cancelledBy:
       cancelledByFromUid?.name ||
       (isUserName(task.cancelledBy) ? task.cancelledBy : undefined),
@@ -190,13 +222,29 @@ const applyPendingOperations = (
   return [...map.values()];
 };
 
-const needsIdentityMigration = (task: Partial<Task>): boolean =>
-  !task.createdByUserId ||
-  !task.assignedToUserId ||
-  !task.lastModifiedByUserId ||
-  (Boolean(task.completedBy) && !task.completedByUserId) ||
-  (Boolean(task.cancelledBy) && !task.cancelledByUserId) ||
-  !task.source;
+const needsIdentityMigration = (task: Partial<Task>): boolean => {
+  if (!task.createdByUserId || !task.lastModifiedByUserId || !task.source) {
+    return true;
+  }
+
+  const assignedTo = isTaskAssignee(task.assignedTo) ? task.assignedTo : undefined;
+  const expectedIds = assignedTo ? getAssigneeUserIds(assignedTo) : [];
+  const currentIds = Array.isArray(task.assignedToUserIds)
+    ? [...task.assignedToUserIds].sort()
+    : [];
+  if (
+    expectedIds.length !== currentIds.length ||
+    expectedIds.some((uid) => !currentIds.includes(uid))
+  ) {
+    return true;
+  }
+
+  if (assignedTo !== "Ambos" && !task.assignedToUserId) return true;
+  if (assignedTo === "Ambos" && task.assignedToUserId) return true;
+  if (Boolean(task.completedBy) && !task.completedByUserId) return true;
+  if (Boolean(task.cancelledBy) && !task.cancelledByUserId) return true;
+  return false;
+};
 
 export interface UseTasksResult {
   tasks: Task[];

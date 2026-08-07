@@ -1,15 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { onValue, ref, remove, set, type Unsubscribe } from "firebase/database";
-import { APP_USERS, getAppUserByName, type AppUserDefinition } from "../config/appUsers";
+import {
+  get,
+  onValue,
+  ref,
+  remove,
+  runTransaction,
+  set,
+  update,
+  type Unsubscribe,
+} from "firebase/database";
+import {
+  APP_USERS,
+  getAppUserByUid,
+  type AppUserDefinition,
+} from "../config/appUsers";
 import { isFirebaseConfigured } from "../config/firebaseConfig";
 import type {
   PapipointsProfile,
   PapipointsReward,
+  PapipointsTaskResolution,
   PapipointsTransaction,
 } from "../models/gamification";
-import type { Task } from "../models/task";
-import { isTaskOverdue } from "../utils/taskDates";
+import type { Task, UserName } from "../models/task";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
+import { getTaskAssigneeUsers } from "../utils/taskAssignment";
+import { getTaskDate, isTaskOverdue } from "../utils/taskDates";
 import {
   COMPLETION_POINTS,
   EARLY_COMPLETION_BONUS,
@@ -24,6 +39,7 @@ import {
 
 const TRANSACTIONS_CACHE_KEY = "taskFollower.papipoints.transactions.v1";
 const REWARDS_CACHE_KEY = "taskFollower.papipoints.rewards.v1";
+const RESOLUTIONS_CACHE_KEY = "taskFollower.papipoints.taskResolutions.v1";
 const PENDING_KEY = "taskFollower.papipoints.pending.v1";
 
 const defaultRewards = (createdByUserId: string): PapipointsReward[] => {
@@ -86,6 +102,21 @@ type PendingOperation =
       actorUserId: string;
       type: "deleteReward";
       rewardId: string;
+    }
+  | {
+      id: string;
+      actorUserId: string;
+      type: "resolveTaskOutcome";
+      resolution: PapipointsTaskResolution;
+      transactions: PapipointsTransaction[];
+    }
+  | {
+      id: string;
+      actorUserId: string;
+      type: "deleteTaskOutcome";
+      taskId: string;
+      claimId?: string;
+      transactionIds: string[];
     };
 
 const stripUndefined = <T,>(value: T): T =>
@@ -106,6 +137,9 @@ const readCachedTransactions = (): PapipointsTransaction[] =>
 const readCachedRewards = (): PapipointsReward[] =>
   readJsonArray<PapipointsReward>(REWARDS_CACHE_KEY);
 
+const readCachedResolutions = (): PapipointsTaskResolution[] =>
+  readJsonArray<PapipointsTaskResolution>(RESOLUTIONS_CACHE_KEY);
+
 const readPendingOperations = (): PendingOperation[] =>
   readJsonArray<PendingOperation>(PENDING_KEY);
 
@@ -115,14 +149,22 @@ const storeTransactions = (transactions: PapipointsTransaction[]): void =>
 const storeRewards = (rewards: PapipointsReward[]): void =>
   localStorage.setItem(REWARDS_CACHE_KEY, JSON.stringify(rewards));
 
+const storeResolutions = (resolutions: PapipointsTaskResolution[]): void =>
+  localStorage.setItem(RESOLUTIONS_CACHE_KEY, JSON.stringify(resolutions));
+
 const storePendingOperations = (operations: PendingOperation[]): void =>
   localStorage.setItem(PENDING_KEY, JSON.stringify(operations));
 
-const recordToArray = <T extends { id: string }>(value: unknown): T[] => {
+const recordToArray = <T extends { id?: string }>(value: unknown): T[] => {
   if (!value || typeof value !== "object") return [];
-  return Object.values(value as Record<string, T>).filter(
-    (item): item is T => Boolean(item?.id),
-  );
+  return Object.values(value as Record<string, T>).filter(Boolean);
+};
+
+const recordToResolutions = (value: unknown): PapipointsTaskResolution[] => {
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, PapipointsTaskResolution>)
+    .filter(([, item]) => Boolean(item?.taskId))
+    .map(([taskId, item]) => ({ ...item, taskId: item.taskId || taskId }));
 };
 
 const mergeTransactionsWithPending = (
@@ -135,6 +177,14 @@ const mergeTransactionsWithPending = (
       map.set(operation.transaction.id, operation.transaction);
     } else if (operation.type === "deleteTransaction") {
       map.delete(operation.transactionId);
+    } else if (operation.type === "resolveTaskOutcome") {
+      for (const transaction of operation.transactions) {
+        map.set(transaction.id, transaction);
+      }
+    } else if (operation.type === "deleteTaskOutcome") {
+      for (const transactionId of operation.transactionIds) {
+        map.delete(transactionId);
+      }
     }
   }
   return [...map.values()];
@@ -155,6 +205,143 @@ const mergeRewardsWithPending = (
   return [...map.values()];
 };
 
+const mergeResolutionsWithPending = (
+  remote: PapipointsTaskResolution[],
+  operations: PendingOperation[],
+): PapipointsTaskResolution[] => {
+  const map = new Map(remote.map((item) => [item.taskId, item]));
+  for (const operation of operations) {
+    if (operation.type === "resolveTaskOutcome") {
+      map.set(operation.resolution.taskId, operation.resolution);
+    } else if (operation.type === "deleteTaskOutcome") {
+      map.delete(operation.taskId);
+    }
+  }
+  return [...map.values()];
+};
+
+const getLegacyTaskOutcome = (
+  taskId: string,
+  transactions: PapipointsTransaction[],
+): PapipointsTaskResolution | null => {
+  // Only positive legacy task outcomes reserve the completion reward.
+  // Overdue transactions are now cumulative penalties and must not block
+  // future overdue cycles after a task is postponed.
+  const rewarded = transactions.filter(
+    (item) =>
+      item.taskId === taskId &&
+      (item.type === "task_completed" ||
+        item.type === "task_early" ||
+        item.id.startsWith(`task-created:${taskId}:completed:`)),
+  );
+  if (!rewarded.length) return null;
+
+  const recipientAmounts: Record<string, number> = {};
+  for (const item of rewarded) {
+    recipientAmounts[item.userId] =
+      (recipientAmounts[item.userId] || 0) + item.amount;
+  }
+
+  return {
+    taskId,
+    claimId: `legacy:${taskId}`,
+    outcome: "rewarded",
+    recipientAmounts,
+    resolvedAt: rewarded[0].createdAt,
+    resolvedByUserId: rewarded[0].createdByUserId,
+    description: "Resultado de Papipuntos migrado: tarea completada",
+  };
+};
+
+const getTaskResolution = (
+  taskId: string,
+): PapipointsTaskResolution | null =>
+  readCachedResolutions().find(
+    (item) => item.taskId === taskId && item.outcome === "rewarded",
+  ) || getLegacyTaskOutcome(taskId, readCachedTransactions());
+
+const hasTaskOverduePenalty = (taskId: string): boolean =>
+  readCachedTransactions().some(
+    (item) => item.taskId === taskId && item.type === "task_overdue",
+  );
+
+const toLocalDateKey = (date: Date): string =>
+  [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+
+const getOverdueDayKeys = (task: Task, now = new Date()): string[] => {
+  const due = getTaskDate(task);
+  if (!due || due.getTime() >= now.getTime()) return [];
+
+  const cursor = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+  // A date-only task expires at the end of its due date, so its first overdue
+  // day is the following calendar day. With an explicit time, the due date
+  // itself counts as day one once that time has passed.
+  if (!task.dueTime) cursor.setDate(cursor.getDate() + 1);
+
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const keys: string[] = [];
+  while (cursor.getTime() <= end.getTime()) {
+    keys.push(toLocalDateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return keys;
+};
+
+const getPenaltyCycleKey = (task: Task): string => {
+  const date = task.dueDate || "sin-fecha";
+  const time = (task.dueTime || "fin-dia").replace(":", "-");
+  return `${date}-${time}`;
+};
+
+const changesFromAmounts = (
+  recipientAmounts: Record<string, number>,
+): PapipointsChange[] =>
+  Object.entries(recipientAmounts)
+    .map(([userId, amount]) => {
+      const user = getAppUserByUid(userId);
+      return user
+        ? {
+            userId,
+            userName: user.name,
+            amount,
+          }
+        : null;
+    })
+    .filter((item): item is PapipointsChange => Boolean(item && item.amount !== 0));
+
+
+const transactionsFromResolution = (
+  resolution: PapipointsTaskResolution,
+): PapipointsTransaction[] => {
+  const result: PapipointsTransaction[] = [];
+  for (const [userId, amount] of Object.entries(
+    resolution.recipientAmounts,
+  )) {
+    if (amount === 0) continue;
+    const user = getAppUserByUid(userId);
+    if (!user) continue;
+    result.push({
+      id: `task-outcome:${resolution.taskId}:${userId}`,
+      userId,
+      userName: user.name,
+      amount,
+      type:
+        resolution.outcome === "penalized"
+          ? "task_overdue"
+          : "task_completed",
+      description: resolution.description,
+      taskId: resolution.taskId,
+      createdAt: resolution.resolvedAt,
+      createdByUserId: resolution.resolvedByUserId,
+    });
+  }
+  return result;
+};
+
 export interface RedeemResult {
   ok: boolean;
   message: string;
@@ -162,21 +349,26 @@ export interface RedeemResult {
   nextLevel?: number;
 }
 
+export interface PapipointsChange {
+  userId: string;
+  userName: UserName;
+  amount: number;
+}
+
 export interface UsePapipointsResult {
   transactions: PapipointsTransaction[];
   rewards: PapipointsReward[];
   profiles: Record<"Yisel" | "Yorki", PapipointsProfile>;
   pendingCount: number;
-  awardTaskCreation: (task: Task) => Promise<number>;
-  removeTaskCreationReward: (taskId: string) => Promise<number>;
+  removePendingTaskCreationReward: (taskId: string) => Promise<PapipointsChange | null>;
   awardTaskCompletion: (
     task: Task,
     completedAt: string,
     completedBy: AppUserDefinition,
-  ) => Promise<number>;
-  removeTaskCompletionRewards: (taskId: string) => Promise<number>;
-  removeAllTaskTransactions: (taskId: string) => Promise<number>;
-  applyOverduePenalty: (task: Task, force?: boolean) => Promise<number>;
+  ) => Promise<PapipointsChange[]>;
+  removeTaskCompletionRewards: (taskId: string) => Promise<PapipointsChange[]>;
+  applyOverduePenalty: (task: Task, force?: boolean) => Promise<PapipointsChange[]>;
+  hasTaskOverduePenalty: (taskId: string) => boolean;
   saveReward: (reward: PapipointsReward) => Promise<void>;
   deleteReward: (rewardId: string) => Promise<void>;
   redeemReward: (reward: PapipointsReward) => Promise<RedeemResult>;
@@ -190,6 +382,9 @@ export const usePapipoints = (
     readCachedTransactions,
   );
   const [rewards, setRewards] = useState<PapipointsReward[]>(readCachedRewards);
+  const [, setResolutions] = useState<PapipointsTaskResolution[]>(
+    readCachedResolutions,
+  );
   const [pendingCount, setPendingCount] = useState(readPendingOperations().length);
   const mountedRef = useRef(true);
   const firebaseConnectedRef = useRef(false);
@@ -204,14 +399,24 @@ export const usePapipoints = (
   }, []);
 
   const updateRewards = useCallback((next: PapipointsReward[]) => {
-    const sorted = [...next].sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name));
+    const sorted = [...next].sort(
+      (a, b) => a.cost - b.cost || a.name.localeCompare(b.name),
+    );
     setRewards(sorted);
     storeRewards(sorted);
   }, []);
 
+  const updateResolutions = useCallback((next: PapipointsTaskResolution[]) => {
+    setResolutions(next);
+    storeResolutions(next);
+  }, []);
+
   const queueOperation = useCallback((operation: PendingOperation) => {
     const current = readPendingOperations();
-    const next = [...current.filter((item) => item.id !== operation.id), operation];
+    const next = [
+      ...current.filter((item) => item.id !== operation.id),
+      operation,
+    ];
     storePendingOperations(next);
     setPendingCount(next.length);
   }, []);
@@ -221,6 +426,25 @@ export const usePapipoints = (
     storePendingOperations(next);
     setPendingCount(next.length);
   }, []);
+
+  const reconcileLostResolution = useCallback(
+    (
+      operation: Extract<PendingOperation, { type: "resolveTaskOutcome" }>,
+      remoteResolution: PapipointsTaskResolution,
+    ) => {
+      const transactionIds = new Set(operation.transactions.map((item) => item.id));
+      updateTransactions(
+        readCachedTransactions().filter((item) => !transactionIds.has(item.id)),
+      );
+      updateResolutions([
+        ...readCachedResolutions().filter(
+          (item) => item.taskId !== remoteResolution.taskId,
+        ),
+        remoteResolution,
+      ]);
+    },
+    [updateResolutions, updateTransactions],
+  );
 
   const executeOperation = useCallback(
     async (operation: PendingOperation): Promise<boolean> => {
@@ -238,9 +462,15 @@ export const usePapipoints = (
         if (auth.currentUser?.uid !== currentUser.uid) return false;
 
         if (operation.type === "upsertTransaction") {
-          await set(
-            ref(database, `papipoints/transactions/${operation.transaction.id}`),
-            stripUndefined(operation.transaction),
+          const transactionRef = ref(
+            database,
+            `papipoints/transactions/${operation.transaction.id}`,
+          );
+          await runTransaction(
+            transactionRef,
+            (current) =>
+              current == null ? stripUndefined(operation.transaction) : undefined,
+            { applyLocally: false },
           );
         } else if (operation.type === "deleteTransaction") {
           await remove(
@@ -251,8 +481,110 @@ export const usePapipoints = (
             ref(database, `papipoints/rewards/${operation.reward.id}`),
             stripUndefined(operation.reward),
           );
-        } else {
+        } else if (operation.type === "deleteReward") {
           await remove(ref(database, `papipoints/rewards/${operation.rewardId}`));
+        } else if (operation.type === "resolveTaskOutcome") {
+          const resolutionRef = ref(
+            database,
+            `papipoints/taskResolutions/${operation.resolution.taskId}`,
+          );
+          const existing = await get(resolutionRef);
+          let winningResolution = existing.exists()
+            ? (existing.val() as PapipointsTaskResolution)
+            : null;
+
+          if (!winningResolution) {
+            const result = await runTransaction(
+              resolutionRef,
+              (current) => (current == null ? stripUndefined(operation.resolution) : undefined),
+              { applyLocally: false },
+            );
+            winningResolution = result.snapshot.exists()
+              ? (result.snapshot.val() as PapipointsTaskResolution)
+              : null;
+            if (!winningResolution) {
+              const afterTransaction = await get(resolutionRef);
+              winningResolution = afterTransaction.exists()
+                ? (afterTransaction.val() as PapipointsTaskResolution)
+                : null;
+            }
+          }
+
+          if (!winningResolution) return false;
+
+          if (
+            winningResolution.claimId !== operation.resolution.claimId
+          ) {
+            // The other device won the one-outcome claim. Recreate its
+            // deterministic transactions from the resolution itself so a
+            // crash between claiming the outcome and writing the ledger cannot
+            // leave the Papipuntos balance incomplete.
+            const remoteTransactions =
+              transactionsFromResolution(winningResolution);
+            const remoteUpdates: Record<string, PapipointsTransaction> = {};
+            for (const transaction of remoteTransactions) {
+              remoteUpdates[`papipoints/transactions/${transaction.id}`] =
+                stripUndefined(transaction);
+            }
+            if (Object.keys(remoteUpdates).length) {
+              await update(ref(database), remoteUpdates);
+            }
+            reconcileLostResolution(operation, winningResolution);
+            removePendingOperation(operation.id);
+            return true;
+          }
+
+          const updates: Record<string, PapipointsTransaction> = {};
+          for (const transaction of operation.transactions) {
+            updates[`papipoints/transactions/${transaction.id}`] =
+              stripUndefined(transaction);
+          }
+          if (Object.keys(updates).length) {
+            await update(ref(database), updates);
+          }
+        } else if (operation.type === "deleteTaskOutcome") {
+          const resolutionRef = ref(
+            database,
+            `papipoints/taskResolutions/${operation.taskId}`,
+          );
+          const snapshot = await get(resolutionRef);
+          const currentResolution = snapshot.exists()
+            ? (snapshot.val() as PapipointsTaskResolution)
+            : null;
+
+          if (
+            currentResolution &&
+            operation.claimId &&
+            currentResolution.claimId !== operation.claimId
+          ) {
+            removePendingOperation(operation.id);
+            return true;
+          }
+
+          if (currentResolution) {
+            await runTransaction(
+              resolutionRef,
+              (current) => {
+                if (current == null) return null;
+                if (
+                  operation.claimId &&
+                  (current as PapipointsTaskResolution).claimId !== operation.claimId
+                ) {
+                  return undefined;
+                }
+                return null;
+              },
+              { applyLocally: false },
+            );
+          }
+
+          if (operation.transactionIds.length) {
+            const updates: Record<string, null> = {};
+            for (const transactionId of operation.transactionIds) {
+              updates[`papipoints/transactions/${transactionId}`] = null;
+            }
+            await update(ref(database), updates);
+          }
         }
 
         removePendingOperation(operation.id);
@@ -261,7 +593,11 @@ export const usePapipoints = (
         return false;
       }
     },
-    [currentUser.uid, removePendingOperation],
+    [
+      currentUser.uid,
+      reconcileLostResolution,
+      removePendingOperation,
+    ],
   );
 
   const submitOperation = useCallback(
@@ -320,34 +656,125 @@ export const usePapipoints = (
     [currentUser.uid, submitOperation, updateTransactions],
   );
 
-  const awardTaskCreation = useCallback(
-    async (task: Task): Promise<number> => {
-      if (task.source !== "manual") return 0;
-      const transaction: PapipointsTransaction = {
-        id: `task-created:${task.id}`,
-        userId: currentUser.uid,
-        userName: currentUser.name,
-        amount: TASK_CREATION_POINTS,
-        type: "task_created",
-        description: `Tarea creada: ${task.name}`,
-        taskId: task.id,
-        createdAt: new Date().toISOString(),
-        createdByUserId: currentUser.uid,
-      };
-      return (await upsertTransaction(transaction)) ? TASK_CREATION_POINTS : 0;
-    },
-    [currentUser, upsertTransaction],
-  );
-
-  const removeTaskCreationReward = useCallback(
-    async (taskId: string): Promise<number> => {
+  const removePendingTaskCreationReward = useCallback(
+    async (taskId: string): Promise<PapipointsChange | null> => {
       const transaction = readCachedTransactions().find(
         (item) => item.id === `task-created:${taskId}`,
       );
-      await deleteTransaction(`task-created:${taskId}`);
-      return transaction ? -transaction.amount : 0;
+      if (!transaction) return null;
+      await deleteTransaction(transaction.id);
+      return {
+        userId: transaction.userId,
+        userName: transaction.userName,
+        amount: -transaction.amount,
+      };
     },
     [deleteTransaction],
+  );
+
+  const resolveTaskOutcome = useCallback(
+    async (
+      resolution: PapipointsTaskResolution,
+      outcomeTransactions: PapipointsTransaction[],
+    ): Promise<PapipointsChange[]> => {
+      if (getTaskResolution(resolution.taskId)) return [];
+
+      updateResolutions([...readCachedResolutions(), resolution]);
+      if (outcomeTransactions.length) {
+        const map = new Map(
+          readCachedTransactions().map((item) => [item.id, item]),
+        );
+        for (const transaction of outcomeTransactions) {
+          map.set(transaction.id, transaction);
+        }
+        updateTransactions([...map.values()]);
+      }
+
+      submitOperation({
+        id: `task-outcome-resolve:${resolution.taskId}`,
+        actorUserId: currentUser.uid,
+        type: "resolveTaskOutcome",
+        resolution,
+        transactions: outcomeTransactions,
+      });
+
+      return changesFromAmounts(resolution.recipientAmounts);
+    },
+    [currentUser.uid, submitOperation, updateResolutions, updateTransactions],
+  );
+
+  const applyOverduePenalty = useCallback(
+    async (task: Task, force = false): Promise<PapipointsChange[]> => {
+      if (!task.priority || !isTaskOverdue(task)) return [];
+      if (!force && !isEligibleForOverduePenalty(task)) return [];
+
+      const changes = new Map<string, PapipointsChange>();
+      const legacyCreation = await removePendingTaskCreationReward(task.id);
+      if (legacyCreation) changes.set(legacyCreation.userId, legacyCreation);
+
+      const overdueDays = getOverdueDayKeys(task);
+      if (!overdueDays.length) return [...changes.values()];
+
+      const resolvedAt = new Date().toISOString();
+      const recipients = getTaskAssigneeUsers(task);
+      const cycleKey = getPenaltyCycleKey(task);
+      const dailyPenalty = OVERDUE_PENALTY[task.priority];
+
+      // Penalties are materialized only when the user acts on the overdue
+      // task. Each overdue calendar day has a deterministic transaction ID,
+      // which means retries and later checks only apply days not already
+      // charged for this deadline cycle.
+      for (let dayIndex = 0; dayIndex < overdueDays.length; dayIndex += 1) {
+        const overdueDay = overdueDays[dayIndex];
+        for (const assignee of recipients) {
+          const transactionId = `task-overdue-day:${task.id}:${cycleKey}:${overdueDay}:${assignee.uid}`;
+          if (readCachedTransactions().some((item) => item.id === transactionId)) {
+            continue;
+          }
+
+          const balance = getPapipointsBalance(
+            readCachedTransactions(),
+            assignee.uid,
+          );
+          const penalty = Math.min(dailyPenalty, balance);
+          const added = await upsertTransaction({
+            id: transactionId,
+            userId: assignee.uid,
+            userName: assignee.name,
+            amount: -penalty,
+            type: "task_overdue",
+            description: `${
+              task.assignedTo === "Ambos"
+                ? "Tarea compartida vencida"
+                : "Tarea vencida"
+            }: ${task.name} (día ${dayIndex + 1} de ${overdueDays.length} de atraso · ${dailyPenalty} Papipuntos por día)`,
+            taskId: task.id,
+            createdAt: resolvedAt,
+            createdByUserId: currentUser.uid,
+          });
+
+          // A zero-value transaction is intentionally kept as a penalty
+          // marker when the balance is already zero. It is hidden from the
+          // visible history, but permanently removes completion eligibility.
+          if (added && penalty > 0) {
+            const existing = changes.get(assignee.uid) || {
+              userId: assignee.uid,
+              userName: assignee.name,
+              amount: 0,
+            };
+            existing.amount -= penalty;
+            changes.set(assignee.uid, existing);
+          }
+        }
+      }
+
+      return [...changes.values()].filter((change) => change.amount !== 0);
+    },
+    [
+      currentUser.uid,
+      removePendingTaskCreationReward,
+      upsertTransaction,
+    ],
   );
 
   const awardTaskCompletion = useCallback(
@@ -355,98 +782,179 @@ export const usePapipoints = (
       task: Task,
       completedAt: string,
       completedBy: AppUserDefinition,
-    ): Promise<number> => {
-      if (!task.priority) return 0;
-      let awarded = 0;
-      const base = COMPLETION_POINTS[task.priority];
-      const completionAdded = await upsertTransaction({
-        id: `task-completed:${task.id}`,
-        userId: completedBy.uid,
-        userName: completedBy.name,
-        amount: base,
-        type: "task_completed",
-        description: `Tarea completada: ${task.name}`,
-        taskId: task.id,
-        createdAt: completedAt,
-        createdByUserId: currentUser.uid,
-      });
-      if (completionAdded) awarded += base;
+    ): Promise<PapipointsChange[]> => {
+      if (!task.priority) return [];
 
-      if (isCompletedEarly(task, completedAt)) {
-        const bonus = EARLY_COMPLETION_BONUS[task.priority];
-        const earlyAdded = await upsertTransaction({
-          id: `task-early:${task.id}`,
-          userId: completedBy.uid,
-          userName: completedBy.name,
-          amount: bonus,
-          type: "task_early",
-          description: `Tarea completada antes de tiempo: ${task.name}`,
+      // Penalties are calculated when the task is completed (or when an
+      // overdue task is postponed/cancelled/deleted). There is no background
+      // daily deduction. Each overdue cycle is charged once for all calendar
+      // days accumulated in that cycle.
+      let penaltyChanges: PapipointsChange[] = [];
+      if (isTaskOverdue(task) && isEligibleForOverduePenalty(task)) {
+        penaltyChanges = await applyOverduePenalty(task);
+      }
+
+      // Once a task has ever received an overdue penalty, it permanently loses
+      // its completion reward. A later postponed deadline can accumulate new
+      // penalties, but completing the task never restores positive points.
+      if (hasTaskOverduePenalty(task.id)) {
+        return penaltyChanges;
+      }
+
+      if (getTaskResolution(task.id)) return penaltyChanges;
+
+      const changes = new Map<string, PapipointsChange>();
+      for (const change of penaltyChanges) changes.set(change.userId, change);
+
+      const legacyCreation = await removePendingTaskCreationReward(task.id);
+      if (legacyCreation) changes.set(legacyCreation.userId, legacyCreation);
+
+      const recipients =
+        task.assignedTo === "Ambos"
+          ? getTaskAssigneeUsers(task)
+          : [completedBy];
+      const base = COMPLETION_POINTS[task.priority];
+      const early = isCompletedEarly(task, completedAt);
+      const earlyBonus = early ? EARLY_COMPLETION_BONUS[task.priority] : 0;
+      const creationBonus = task.source === "manual" ? TASK_CREATION_POINTS : 0;
+      const amountPerRecipient = base + earlyBonus + creationBonus;
+      const recipientAmounts: Record<string, number> = {};
+      const outcomeTransactions: PapipointsTransaction[] = [];
+
+      for (const recipient of recipients) {
+        recipientAmounts[recipient.uid] = amountPerRecipient;
+        const detailParts = [
+          `${base} por completar`,
+          creationBonus ? `${creationBonus} por tarea manual` : "",
+          earlyBonus ? `${earlyBonus} por completar antes de tiempo` : "",
+        ].filter(Boolean);
+        outcomeTransactions.push({
+          id: `task-outcome:${task.id}:${recipient.uid}`,
+          userId: recipient.uid,
+          userName: recipient.name,
+          amount: amountPerRecipient,
+          type: "task_completed",
+          description: `${
+            task.assignedTo === "Ambos"
+              ? "Tarea compartida completada"
+              : "Tarea completada"
+          }: ${task.name} (${detailParts.join(" + ")})`,
           taskId: task.id,
           createdAt: completedAt,
           createdByUserId: currentUser.uid,
         });
-        if (earlyAdded) awarded += bonus;
       }
 
-      return awarded;
+      const outcomeChanges = await resolveTaskOutcome(
+        {
+          taskId: task.id,
+          claimId: crypto.randomUUID(),
+          outcome: "rewarded",
+          recipientAmounts,
+          resolvedAt: completedAt,
+          resolvedByUserId: currentUser.uid,
+          description: early
+            ? `Tarea completada antes de tiempo: ${task.name}`
+            : `Tarea completada: ${task.name}`,
+        },
+        outcomeTransactions,
+      );
+
+      for (const change of outcomeChanges) {
+        const existing = changes.get(change.userId) || {
+          ...change,
+          amount: 0,
+        };
+        existing.amount += change.amount;
+        changes.set(change.userId, existing);
+      }
+
+      return [...changes.values()].filter((change) => change.amount !== 0);
     },
-    [currentUser.uid, upsertTransaction],
+    [
+      applyOverduePenalty,
+      currentUser.uid,
+      removePendingTaskCreationReward,
+      resolveTaskOutcome,
+    ],
   );
 
   const removeTaskCompletionRewards = useCallback(
-    async (taskId: string): Promise<number> => {
+    async (taskId: string): Promise<PapipointsChange[]> => {
+      const resolution = readCachedResolutions().find(
+        (item) => item.taskId === taskId && item.outcome === "rewarded",
+      );
+
+      if (resolution) {
+        // A missed deadline is permanent. Undoing the later task completion
+        // must not refund or reopen a penalty outcome.
+        if (resolution.outcome !== "rewarded") return [];
+
+        const transactionIds = readCachedTransactions()
+          .filter(
+            (item) =>
+              item.taskId === taskId &&
+              item.id.startsWith(`task-outcome:${taskId}:`),
+          )
+          .map((item) => item.id);
+        const transactionIdSet = new Set(transactionIds);
+        updateTransactions(
+          readCachedTransactions().filter(
+            (item) => !transactionIdSet.has(item.id),
+          ),
+        );
+        updateResolutions(
+          readCachedResolutions().filter((item) => item.taskId !== taskId),
+        );
+        submitOperation({
+          id: `task-outcome-delete:${taskId}`,
+          actorUserId: currentUser.uid,
+          type: "deleteTaskOutcome",
+          taskId,
+          claimId: resolution.claimId,
+          transactionIds,
+        });
+
+        return changesFromAmounts(
+          Object.fromEntries(
+            Object.entries(resolution.recipientAmounts).map(([uid, amount]) => [
+              uid,
+              -amount,
+            ]),
+          ),
+        );
+      }
+
+      // Compatibility with positive outcomes created by older versions.
       const existing = readCachedTransactions().filter(
         (item) =>
-          item.id === `task-completed:${taskId}` ||
-          item.id === `task-early:${taskId}`,
+          item.taskId === taskId &&
+          (item.type === "task_completed" ||
+            item.type === "task_early" ||
+            item.id.startsWith(`task-created:${taskId}:completed:`)),
       );
-      await deleteTransaction(`task-completed:${taskId}`);
-      await deleteTransaction(`task-early:${taskId}`);
-      return -existing.reduce((total, item) => total + item.amount, 0);
-    },
-    [deleteTransaction],
-  );
+      if (!existing.length) return [];
 
-  const removeAllTaskTransactions = useCallback(
-    async (taskId: string): Promise<number> => {
-      const existing = readCachedTransactions().filter(
-        (item) => item.taskId === taskId,
-      );
+      const changes = new Map<string, PapipointsChange>();
       for (const transaction of existing) {
+        const current = changes.get(transaction.userId) || {
+          userId: transaction.userId,
+          userName: transaction.userName,
+          amount: 0,
+        };
+        current.amount -= transaction.amount;
+        changes.set(transaction.userId, current);
         await deleteTransaction(transaction.id);
       }
-      return -existing.reduce((total, item) => total + item.amount, 0);
+      return [...changes.values()].filter((change) => change.amount !== 0);
     },
-    [deleteTransaction],
-  );
-
-  const applyOverduePenalty = useCallback(
-    async (task: Task, force = false): Promise<number> => {
-      if (!task.priority) return 0;
-      if (force ? !isTaskOverdue(task) : !isEligibleForOverduePenalty(task)) return 0;
-      const transactionId = `task-overdue:${task.id}`;
-      if (readCachedTransactions().some((item) => item.id === transactionId)) {
-        return 0;
-      }
-
-      const assignee = getAppUserByName(task.assignedTo);
-      const balance = getPapipointsBalance(readCachedTransactions(), assignee.uid);
-      const penalty = Math.min(OVERDUE_PENALTY[task.priority], balance);
-
-      const added = await upsertTransaction({
-        id: transactionId,
-        userId: assignee.uid,
-        userName: assignee.name,
-        amount: -penalty,
-        type: "task_overdue",
-        description: `Tarea vencida: ${task.name}`,
-        taskId: task.id,
-        createdAt: new Date().toISOString(),
-        createdByUserId: currentUser.uid,
-      });
-      return added ? -penalty : 0;
-    },
-    [currentUser.uid, upsertTransaction],
+    [
+      currentUser.uid,
+      deleteTransaction,
+      submitOperation,
+      updateResolutions,
+      updateTransactions,
+    ],
   );
 
   const saveReward = useCallback(
@@ -483,7 +991,9 @@ export const usePapipoints = (
     async (reward: PapipointsReward): Promise<RedeemResult> => {
       const currentTransactions = readCachedTransactions();
       const balance = getPapipointsBalance(currentTransactions, currentUser.uid);
-      if (!reward.active) return { ok: false, message: "Esta recompensa no está disponible." };
+      if (!reward.active) {
+        return { ok: false, message: "Esta recompensa no está disponible." };
+      }
       if (balance < reward.cost) {
         return {
           ok: false,
@@ -525,16 +1035,20 @@ export const usePapipoints = (
 
     let unsubscribeTransactions: Unsubscribe | undefined;
     let unsubscribeRewards: Unsubscribe | undefined;
+    let unsubscribeResolutions: Unsubscribe | undefined;
     let unsubscribeConnection: Unsubscribe | undefined;
 
     try {
       const { auth, database } = getAuthenticatedFirebaseServices();
       if (auth.currentUser?.uid !== currentUser.uid) return () => undefined;
 
-      unsubscribeConnection = onValue(ref(database, ".info/connected"), (snapshot) => {
-        firebaseConnectedRef.current = snapshot.val() === true;
-        if (firebaseConnectedRef.current) void retrySync();
-      });
+      unsubscribeConnection = onValue(
+        ref(database, ".info/connected"),
+        (snapshot) => {
+          firebaseConnectedRef.current = snapshot.val() === true;
+          if (firebaseConnectedRef.current) void retrySync();
+        },
+      );
 
       unsubscribeTransactions = onValue(
         ref(database, "papipoints/transactions"),
@@ -549,15 +1063,35 @@ export const usePapipoints = (
         },
       );
 
+      unsubscribeResolutions = onValue(
+        ref(database, "papipoints/taskResolutions"),
+        (snapshot) => {
+          if (!mountedRef.current) return;
+          updateResolutions(
+            mergeResolutionsWithPending(
+              recordToResolutions(snapshot.val()),
+              readPendingOperations(),
+            ),
+          );
+        },
+      );
+
       unsubscribeRewards = onValue(
         ref(database, "papipoints/rewards"),
         (snapshot) => {
           if (!mountedRef.current) return;
           const remote = recordToArray<PapipointsReward>(snapshot.val());
-          const merged = mergeRewardsWithPending(remote, readPendingOperations());
+          const merged = mergeRewardsWithPending(
+            remote,
+            readPendingOperations(),
+          );
           updateRewards(merged);
 
-          if (!remote.length && !merged.length && !defaultsInitializedRef.current) {
+          if (
+            !remote.length &&
+            !merged.length &&
+            !defaultsInitializedRef.current
+          ) {
             defaultsInitializedRef.current = true;
             for (const reward of defaultRewards(currentUser.uid)) {
               void saveReward(reward);
@@ -574,9 +1108,17 @@ export const usePapipoints = (
       firebaseConnectedRef.current = false;
       unsubscribeTransactions?.();
       unsubscribeRewards?.();
+      unsubscribeResolutions?.();
       unsubscribeConnection?.();
     };
-  }, [currentUser.uid, retrySync, saveReward, updateRewards, updateTransactions]);
+  }, [
+    currentUser.uid,
+    retrySync,
+    saveReward,
+    updateResolutions,
+    updateRewards,
+    updateTransactions,
+  ]);
 
   const profiles = useMemo(
     () =>
@@ -594,12 +1136,11 @@ export const usePapipoints = (
     rewards,
     profiles,
     pendingCount,
-    awardTaskCreation,
-    removeTaskCreationReward,
+    removePendingTaskCreationReward,
     awardTaskCompletion,
     removeTaskCompletionRewards,
-    removeAllTaskTransactions,
     applyOverduePenalty,
+    hasTaskOverduePenalty,
     saveReward,
     deleteReward,
     redeemReward,

@@ -10,6 +10,7 @@ import {
   USERS,
   type RecurrenceType,
   type Task,
+  type TaskAssignee,
   type TaskPriority,
   type UserName,
 } from "../models/task";
@@ -19,6 +20,7 @@ import {
 } from "../utils/taskCompleteness";
 import { toDateInputValue } from "../utils/taskDates";
 import type { TaskTemplate } from "../models/template";
+import { getAssigneeUserIds } from "../utils/taskAssignment";
 
 interface TaskFormProps {
   editingTask: Task | null;
@@ -38,7 +40,7 @@ interface FormState {
   dueDate: string;
   dueTime: string;
   priority: TaskPriority | "";
-  assignedTo: UserName;
+  assignedTo: TaskAssignee;
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
   recurrenceEndDate: string;
@@ -46,7 +48,7 @@ interface FormState {
 
 interface SavedDefaults {
   estimatedMinutes?: string;
-  assignedTo?: UserName;
+  assignedTo?: TaskAssignee;
 }
 
 export const TASK_FORM_DRAFT_KEY = "taskFollower.taskDraft.v3";
@@ -97,7 +99,9 @@ const createInitialState = (defaultUser: UserName): FormState => {
     dueTime: "",
     priority: "",
     assignedTo:
-      defaults.assignedTo === "Yisel" || defaults.assignedTo === "Yorki"
+      defaults.assignedTo === "Yisel" ||
+      defaults.assignedTo === "Yorki" ||
+      defaults.assignedTo === "Ambos"
         ? defaults.assignedTo
         : defaultUser,
     recurrenceType: "none",
@@ -131,7 +135,9 @@ const readDraft = (defaultUser: UserName): FormState | null => {
           ? parsed.priority
           : "",
       assignedTo:
-        parsed.assignedTo === "Yisel" || parsed.assignedTo === "Yorki"
+        parsed.assignedTo === "Yisel" ||
+        parsed.assignedTo === "Yorki" ||
+        parsed.assignedTo === "Ambos"
           ? parsed.assignedTo
           : defaultUser,
     };
@@ -235,13 +241,32 @@ export function TaskForm({
   };
 
   const applyTemplate = (template: TaskTemplate) => {
-    setForm((current) => ({
-      ...current,
+    const dueDate = template.dueDate || "";
+    const recurrenceType = dueDate ? template.recurrence.type : "none";
+    setForm({
       name: template.name,
-      description: template.description || current.description,
-      estimatedMinutes: template.estimatedMinutes ? String(template.estimatedMinutes) : current.estimatedMinutes,
-      priority: template.priority || current.priority,
-    }));
+      description: template.description || "",
+      estimatedMinutes: template.estimatedMinutes
+        ? String(template.estimatedMinutes)
+        : "",
+      dueDate,
+      dueTime: dueDate ? template.dueTime || "" : "",
+      priority: template.priority || "",
+      assignedTo: template.assignedTo,
+      recurrenceType,
+      recurrenceInterval: String(Math.max(1, template.recurrence.interval || 1)),
+      recurrenceEndDate:
+        dueDate && recurrenceType !== "none"
+          ? template.recurrence.endDate || ""
+          : "",
+    });
+    setShowAdvanced(
+      Boolean(
+        template.description ||
+          template.dueTime ||
+          recurrenceType !== "none",
+      ),
+    );
     window.setTimeout(() => nameInputRef.current?.focus(), 0);
   };
 
@@ -261,7 +286,11 @@ export function TaskForm({
       assignedBy: editingTask?.assignedBy || currentUser.name,
       assignedTo: form.assignedTo,
       createdByUserId: editingTask?.createdByUserId || currentUser.uid,
-      assignedToUserId: getAppUserByName(form.assignedTo).uid,
+      assignedToUserId:
+        form.assignedTo === "Ambos"
+          ? undefined
+          : getAppUserByName(form.assignedTo).uid,
+      assignedToUserIds: getAssigneeUserIds(form.assignedTo),
       lastModifiedByUserId: currentUser.uid,
       status: editingTask?.status || "pending",
       recurrence: {
@@ -410,15 +439,15 @@ export function TaskForm({
 
       <fieldset className="quick-group">
         <legend>Asignada a</legend>
-        <div className="segmented-options two-options">
-          {USERS.map((user) => (
+        <div className="segmented-options three-options">
+          {[...USERS, "Ambos" as const].map((user) => (
             <button
               key={user}
               type="button"
               className={form.assignedTo === user ? "selected" : ""}
               onClick={() => update("assignedTo", user)}
             >
-              {user}
+              {user === "Ambos" ? "👥 Ambos" : user}
             </button>
           ))}
         </div>

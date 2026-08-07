@@ -2568,3 +2568,38 @@ h2 {
     flex-direction: column;
   }
 }
+
+/* Shared task + full template fields */
+.three-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.shared-task-label {
+  display: inline-flex;
+  min-height: 21px;
+  align-items: center;
+  padding: 0.14rem 0.42rem;
+  border-radius: 999px;
+  color: #5a4098;
+  background: #f0eaff;
+  font-size: 0.696rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.template-assignee-group {
+  margin-top: 0.15rem;
+}
+
+.template-manager-form .field small {
+  color: var(--muted);
+  font-size: 0.816rem;
+  line-height: 1.35;
+}
+
+@media (max-width: 420px) {
+  .three-options {
+    grid-template-columns: 1fr;
+  }
+}

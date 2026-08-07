@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Task, TaskPriority, UserName } from "../models/task";
+import type { Task, TaskAssignee, TaskPriority } from "../models/task";
 import {
   formatDueDate,
   formatDuration,
@@ -14,7 +14,7 @@ interface TaskCardProps {
   onComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onDuplicate: (task: Task) => void;
-  onReassign: (task: Task, assignedTo: UserName) => void;
+  onReassign: (task: Task, assignedTo: TaskAssignee) => void;
   onPostpone: (task: Task, dueDate: string) => void;
   onCancelTask: (task: Task) => void;
   onDelete: (task: Task) => void;
@@ -81,7 +81,6 @@ export function TaskCard({
   const [showPostpone, setShowPostpone] = useState(false);
   const [customDate, setCustomDate] = useState(task.dueDate || "");
   const menuRef = useRef<HTMLDivElement>(null);
-  const otherUser: UserName = task.assignedTo === "Yorki" ? "Yisel" : "Yorki";
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -109,6 +108,9 @@ export function TaskCard({
         <div className="task-card-topline">
           {featured && <span className="next-label">Siguiente</span>}
           <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
+          {task.assignedTo === "Ambos" && (
+            <span className="shared-task-label">👥 Compartida</span>
+          )}
           {overdue && <span className="overdue-label">Vencida</span>}
           {task.recurrence.type !== "none" && (
             <span className="recurrence-label">↻ {formatRecurrence(task)}</span>
@@ -142,12 +144,44 @@ export function TaskCard({
                   <button type="button" onClick={() => runAndClose(() => onDuplicate(task))}>
                     Duplicar
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => runAndClose(() => onReassign(task, otherUser))}
-                  >
-                    Asignar a {otherUser}
-                  </button>
+                  {task.assignedTo === "Ambos" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => runAndClose(() => onReassign(task, "Yorki"))}
+                      >
+                        Asignar solo a Yorki
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => runAndClose(() => onReassign(task, "Yisel"))}
+                      >
+                        Asignar solo a Yisel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runAndClose(() =>
+                            onReassign(
+                              task,
+                              task.assignedTo === "Yorki" ? "Yisel" : "Yorki",
+                            ),
+                          )
+                        }
+                      >
+                        Asignar a {task.assignedTo === "Yorki" ? "Yisel" : "Yorki"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => runAndClose(() => onReassign(task, "Ambos"))}
+                      >
+                        Convertir en tarea compartida
+                      </button>
+                    </>
+                  )}
                   <button type="button" onClick={() => setShowPostpone(true)}>
                     Posponer…
                   </button>

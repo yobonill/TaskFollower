@@ -3,10 +3,13 @@ import { get, onValue, ref, remove, set, type Unsubscribe } from "firebase/datab
 import type { AppUserDefinition } from "../config/appUsers";
 import { isFirebaseConfigured } from "../config/firebaseConfig";
 import type { TaskTemplate } from "../models/template";
+import type { RecurrenceType, TaskAssignee, TaskPriority, UserName } from "../models/task";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
 
-const CACHE_KEY = "taskFollower.templates.v1";
-const PENDING_KEY = "taskFollower.templates.pending.v1";
+const CACHE_KEY = "taskFollower.templates.v2";
+const LEGACY_CACHE_KEY = "taskFollower.templates.v1";
+const PENDING_KEY = "taskFollower.templates.pending.v2";
+const LEGACY_PENDING_KEY = "taskFollower.templates.pending.v1";
 const INITIALIZED_KEY = "taskFollower.templates.defaultsInitialized.v1";
 
 type PendingOperation =
@@ -23,63 +26,94 @@ type PendingOperation =
       templateId: string;
     };
 
-const defaultTemplates = (createdByUserId: string): TaskTemplate[] => {
+type LegacyTemplate = Partial<TaskTemplate> & {
+  id: string;
+  name: string;
+  priority?: TaskPriority;
+  assignedTo?: TaskAssignee;
+  recurrence?: Partial<TaskTemplate["recurrence"]>;
+};
+
+const isAssignee = (value: unknown): value is TaskAssignee =>
+  value === "Yisel" || value === "Yorki" || value === "Ambos";
+
+const isRecurrenceType = (value: unknown): value is RecurrenceType =>
+  value === "none" || value === "daily" || value === "weekly" || value === "monthly";
+
+const normalizeTemplate = (
+  value: LegacyTemplate,
+  defaultAssignee: UserName,
+): TaskTemplate => {
+  const dueDate =
+    typeof value.dueDate === "string" && value.dueDate.trim()
+      ? value.dueDate
+      : undefined;
+  const recurrenceType =
+    dueDate && isRecurrenceType(value.recurrence?.type)
+      ? value.recurrence.type
+      : "none";
+  const estimatedMinutes = Number(value.estimatedMinutes);
+  const createdAt = value.createdAt || new Date().toISOString();
+
+  return {
+    id: value.id,
+    name: typeof value.name === "string" ? value.name : "",
+    description: value.description || "",
+    estimatedMinutes:
+      Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
+        ? Math.max(1, estimatedMinutes)
+        : undefined,
+    priority: value.priority,
+    assignedTo: isAssignee(value.assignedTo) ? value.assignedTo : defaultAssignee,
+    dueDate,
+    dueTime: dueDate && value.dueTime ? value.dueTime : undefined,
+    recurrence: {
+      type: recurrenceType,
+      interval: Math.max(1, Number(value.recurrence?.interval) || 1),
+      endDate:
+        dueDate &&
+        recurrenceType !== "none" &&
+        typeof value.recurrence?.endDate === "string" &&
+        value.recurrence.endDate.trim()
+          ? value.recurrence.endDate
+          : undefined,
+    },
+    createdAt,
+    updatedAt: value.updatedAt || createdAt,
+    createdByUserId: value.createdByUserId || "migration",
+  };
+};
+
+const defaultTemplates = (user: AppUserDefinition): TaskTemplate[] => {
   const timestamp = new Date().toISOString();
+  const create = (
+    id: string,
+    name: string,
+    estimatedMinutes: number,
+    priority: TaskPriority,
+  ): TaskTemplate => ({
+    id,
+    name,
+    description: "",
+    estimatedMinutes,
+    priority,
+    assignedTo: user.name,
+    recurrence: { type: "none", interval: 1 },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    createdByUserId: user.uid,
+  });
+
   return [
-    {
-      id: "template-clean-house",
-      name: "Limpiar la casa",
-      description: "",
-      estimatedMinutes: 60,
-      priority: "normal",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdByUserId,
-    },
-    {
-      id: "template-groceries",
-      name: "Comprar en el supermercado",
-      description: "",
-      estimatedMinutes: 45,
-      priority: "normal",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdByUserId,
-    },
-    {
-      id: "template-bill",
-      name: "Pagar factura",
-      description: "",
-      estimatedMinutes: 10,
-      priority: "high",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdByUserId,
-    },
-    {
-      id: "template-trash",
-      name: "Sacar la basura",
-      description: "",
-      estimatedMinutes: 10,
-      priority: "normal",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdByUserId,
-    },
-    {
-      id: "template-laundry",
-      name: "Lavar la ropa",
-      description: "",
-      estimatedMinutes: 15,
-      priority: "normal",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdByUserId,
-    },
+    create("template-clean-house", "Limpiar la casa", 60, "normal"),
+    create("template-groceries", "Comprar en el supermercado", 45, "normal"),
+    create("template-bill", "Pagar factura", 10, "high"),
+    create("template-trash", "Sacar la basura", 10, "normal"),
+    create("template-laundry", "Lavar la ropa", 15, "normal"),
   ];
 };
 
-const readArray = <T,>(key: string): T[] => {
+const readRawArray = <T,>(key: string): T[] => {
   try {
     const parsed = JSON.parse(localStorage.getItem(key) || "[]") as unknown;
     return Array.isArray(parsed) ? (parsed as T[]) : [];
@@ -88,8 +122,33 @@ const readArray = <T,>(key: string): T[] => {
   }
 };
 
-const readCachedTemplates = (): TaskTemplate[] => readArray<TaskTemplate>(CACHE_KEY);
-const readPending = (): PendingOperation[] => readArray<PendingOperation>(PENDING_KEY);
+const readCachedTemplates = (defaultAssignee: UserName): TaskTemplate[] => {
+  const current = readRawArray<LegacyTemplate>(CACHE_KEY);
+  const legacy = current.length
+    ? current
+    : readRawArray<LegacyTemplate>(LEGACY_CACHE_KEY);
+  return legacy
+    .filter((item) => Boolean(item?.id && item?.name))
+    .map((item) => normalizeTemplate(item, defaultAssignee));
+};
+
+const readPending = (defaultAssignee: UserName): PendingOperation[] => {
+  const current = readRawArray<PendingOperation>(PENDING_KEY);
+  const raw = current.length
+    ? current
+    : readRawArray<PendingOperation>(LEGACY_PENDING_KEY);
+  return raw.map((operation) =>
+    operation.type === "upsert"
+      ? {
+          ...operation,
+          template: normalizeTemplate(
+            operation.template as LegacyTemplate,
+            defaultAssignee,
+          ),
+        }
+      : operation,
+  );
+};
 
 const storeTemplates = (templates: TaskTemplate[]): void => {
   localStorage.setItem(CACHE_KEY, JSON.stringify(templates));
@@ -101,11 +160,14 @@ const storePending = (operations: PendingOperation[]): void => {
 
 const stripUndefined = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-const recordToTemplates = (value: unknown): TaskTemplate[] => {
+const recordToTemplates = (
+  value: unknown,
+  defaultAssignee: UserName,
+): TaskTemplate[] => {
   if (!value || typeof value !== "object") return [];
-  return Object.values(value as Record<string, TaskTemplate>).filter(
-    (item): item is TaskTemplate => Boolean(item?.id && item.name),
-  );
+  return Object.values(value as Record<string, LegacyTemplate>)
+    .filter((item): item is LegacyTemplate => Boolean(item?.id && item?.name))
+    .map((item) => normalizeTemplate(item, defaultAssignee));
 };
 
 const mergePending = (
@@ -131,8 +193,12 @@ export interface UseTemplatesResult {
 export const useTemplates = (
   currentUser: AppUserDefinition,
 ): UseTemplatesResult => {
-  const [templates, setTemplates] = useState<TaskTemplate[]>(readCachedTemplates);
-  const [pendingCount, setPendingCount] = useState(readPending().length);
+  const [templates, setTemplates] = useState<TaskTemplate[]>(() =>
+    readCachedTemplates(currentUser.name),
+  );
+  const [pendingCount, setPendingCount] = useState(
+    () => readPending(currentUser.name).length,
+  );
   const [firebaseConnected, setFirebaseConnected] = useState(false);
 
   const updateLocal = useCallback((next: TaskTemplate[]) => {
@@ -142,16 +208,21 @@ export const useTemplates = (
   }, []);
 
   const queueOperation = useCallback((operation: PendingOperation) => {
-    const next = [...readPending().filter((item) => item.id !== operation.id), operation];
+    const next = [
+      ...readPending(currentUser.name).filter((item) => item.id !== operation.id),
+      operation,
+    ];
     storePending(next);
     setPendingCount(next.length);
-  }, []);
+  }, [currentUser.name]);
 
   const removePending = useCallback((operationId: string) => {
-    const next = readPending().filter((item) => item.id !== operationId);
+    const next = readPending(currentUser.name).filter(
+      (item) => item.id !== operationId,
+    );
     storePending(next);
     setPendingCount(next.length);
-  }, []);
+  }, [currentUser.name]);
 
   const execute = useCallback(
     async (operation: PendingOperation): Promise<boolean> => {
@@ -196,35 +267,40 @@ export const useTemplates = (
 
   const retrySync = useCallback(async () => {
     if (!navigator.onLine || !firebaseConnected) return;
-    const eligible = readPending().filter(
+    const eligible = readPending(currentUser.name).filter(
       (operation) => operation.actorUserId === currentUser.uid,
     );
     for (const operation of eligible) {
       const succeeded = await execute(operation);
       if (!succeeded) break;
     }
-  }, [currentUser.uid, execute, firebaseConnected]);
+  }, [currentUser.name, currentUser.uid, execute, firebaseConnected]);
 
   const saveTemplate = useCallback(
     async (template: TaskTemplate) => {
-      const current = readCachedTemplates();
-      const next = current.some((item) => item.id === template.id)
-        ? current.map((item) => (item.id === template.id ? template : item))
-        : [...current, template];
+      const normalized = normalizeTemplate(template, currentUser.name);
+      const current = readCachedTemplates(currentUser.name);
+      const next = current.some((item) => item.id === normalized.id)
+        ? current.map((item) => (item.id === normalized.id ? normalized : item))
+        : [...current, normalized];
       updateLocal(next);
       submit({
-        id: `template-upsert:${template.id}`,
+        id: `template-upsert:${normalized.id}`,
         actorUserId: currentUser.uid,
         type: "upsert",
-        template,
+        template: normalized,
       });
     },
-    [currentUser.uid, submit, updateLocal],
+    [currentUser.name, currentUser.uid, submit, updateLocal],
   );
 
   const deleteTemplate = useCallback(
     async (templateId: string) => {
-      updateLocal(readCachedTemplates().filter((item) => item.id !== templateId));
+      updateLocal(
+        readCachedTemplates(currentUser.name).filter(
+          (item) => item.id !== templateId,
+        ),
+      );
       submit({
         id: `template-delete:${templateId}`,
         actorUserId: currentUser.uid,
@@ -232,13 +308,16 @@ export const useTemplates = (
         templateId,
       });
     },
-    [currentUser.uid, submit, updateLocal],
+    [currentUser.name, currentUser.uid, submit, updateLocal],
   );
 
   useEffect(() => {
     if (!isFirebaseConfigured()) {
-      if (!readCachedTemplates().length && !localStorage.getItem(INITIALIZED_KEY)) {
-        const defaults = defaultTemplates(currentUser.uid);
+      if (
+        !readCachedTemplates(currentUser.name).length &&
+        !localStorage.getItem(INITIALIZED_KEY)
+      ) {
+        const defaults = defaultTemplates(currentUser);
         updateLocal(defaults);
         localStorage.setItem(INITIALIZED_KEY, "1");
       }
@@ -254,19 +333,32 @@ export const useTemplates = (
         const { auth, database } = getAuthenticatedFirebaseServices();
         if (auth.currentUser?.uid !== currentUser.uid) return;
 
-        unsubscribeConnection = onValue(ref(database, ".info/connected"), (snapshot) => {
-          const connected = snapshot.val() === true;
-          if (!disposed) setFirebaseConnected(connected);
-        });
+        unsubscribeConnection = onValue(
+          ref(database, ".info/connected"),
+          (snapshot) => {
+            const connected = snapshot.val() === true;
+            if (!disposed) setFirebaseConnected(connected);
+          },
+        );
 
-        unsubscribeTemplates = onValue(ref(database, "taskTemplates/items"), (snapshot) => {
-          if (disposed) return;
-          updateLocal(mergePending(recordToTemplates(snapshot.val()), readPending()));
-        });
+        unsubscribeTemplates = onValue(
+          ref(database, "taskTemplates/items"),
+          (snapshot) => {
+            if (disposed) return;
+            updateLocal(
+              mergePending(
+                recordToTemplates(snapshot.val(), currentUser.name),
+                readPending(currentUser.name),
+              ),
+            );
+          },
+        );
 
-        const initializedSnapshot = await get(ref(database, "taskTemplates/initialized"));
+        const initializedSnapshot = await get(
+          ref(database, "taskTemplates/initialized"),
+        );
         if (!initializedSnapshot.exists()) {
-          const defaults = defaultTemplates(currentUser.uid);
+          const defaults = defaultTemplates(currentUser);
           for (const template of defaults) {
             await set(
               ref(database, `taskTemplates/items/${template.id}`),
@@ -287,7 +379,7 @@ export const useTemplates = (
       unsubscribeTemplates?.();
       unsubscribeConnection?.();
     };
-  }, [currentUser.uid, updateLocal]);
+  }, [currentUser, updateLocal]);
 
   useEffect(() => {
     if (firebaseConnected) void retrySync();

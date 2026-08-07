@@ -1,5 +1,6 @@
 export const USERS = ["Yisel", "Yorki"] as const;
 export type UserName = (typeof USERS)[number];
+export type TaskAssignee = UserName | "Ambos";
 export type UserFilter = "all" | UserName;
 
 export type TaskPriority = "low" | "normal" | "high" | "critical";
@@ -27,12 +28,15 @@ export interface Task {
   dueDate?: string;
   dueTime?: string;
   priority?: TaskPriority;
-  /** Display names retained for readable exports and legacy compatibility. */
+  /** Display values retained for readable exports and legacy compatibility. */
   assignedBy: UserName;
-  assignedTo: UserName;
+  assignedTo: TaskAssignee;
   /** Firebase Authentication identities used for attribution and ownership. */
   createdByUserId?: string;
+  /** Legacy/single-assignee UID. Undefined for shared tasks. */
   assignedToUserId?: string;
+  /** Canonical assignee UID list. Shared tasks contain both users. */
+  assignedToUserIds?: string[];
   lastModifiedByUserId?: string;
   status: TaskStatus;
   recurrence: TaskRecurrence;
@@ -49,7 +53,7 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 3;
+  schemaVersion: 4;
   exportedAt: string;
   tasks: Task[];
 }
