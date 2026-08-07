@@ -18,10 +18,15 @@ import {
   getMissingRequiredFields,
 } from "../utils/taskCompleteness";
 import { toDateInputValue } from "../utils/taskDates";
+import type { TaskTemplate } from "../models/template";
 
 interface TaskFormProps {
   editingTask: Task | null;
   currentUser: AppUserDefinition;
+  templates: TaskTemplate[];
+  findSimilarTasks: (candidate: Task) => Task[];
+  skipSimilarityCheck?: boolean;
+  onReviewSimilar: (draft: Task, similarTasks: Task[]) => void;
   onSave: (task: Task, createAnother: boolean) => Promise<void>;
   onCancel: () => void;
 }
@@ -44,55 +49,9 @@ interface SavedDefaults {
   assignedTo?: UserName;
 }
 
-interface TaskTemplate {
-  id: string;
-  label: string;
-  name: string;
-  description?: string;
-  estimatedMinutes: number;
-  priority: TaskPriority;
-}
-
-const DRAFT_KEY = "taskFollower.taskDraft.v3";
+export const TASK_FORM_DRAFT_KEY = "taskFollower.taskDraft.v3";
+const DRAFT_KEY = TASK_FORM_DRAFT_KEY;
 const DEFAULTS_KEY = "taskFollower.taskFormDefaults.v2";
-
-const templates: TaskTemplate[] = [
-  {
-    id: "clean-house",
-    label: "Limpiar la casa",
-    name: "Limpiar la casa",
-    estimatedMinutes: 60,
-    priority: "normal",
-  },
-  {
-    id: "groceries",
-    label: "Comprar supermercado",
-    name: "Comprar en el supermercado",
-    estimatedMinutes: 45,
-    priority: "normal",
-  },
-  {
-    id: "bill",
-    label: "Pagar factura",
-    name: "Pagar factura",
-    estimatedMinutes: 10,
-    priority: "high",
-  },
-  {
-    id: "trash",
-    label: "Sacar la basura",
-    name: "Sacar la basura",
-    estimatedMinutes: 10,
-    priority: "normal",
-  },
-  {
-    id: "laundry",
-    label: "Lavar ropa",
-    name: "Lavar la ropa",
-    estimatedMinutes: 15,
-    priority: "normal",
-  },
-];
 
 const addDays = (date: Date, amount: number): Date => {
   const next = new Date(date);
@@ -184,6 +143,10 @@ const readDraft = (defaultUser: UserName): FormState | null => {
 export function TaskForm({
   editingTask,
   currentUser,
+  templates,
+  findSimilarTasks,
+  skipSimilarityCheck = false,
+  onReviewSimilar,
   onSave,
   onCancel,
 }: TaskFormProps) {
@@ -199,6 +162,7 @@ export function TaskForm({
   const [customDuration, setCustomDuration] = useState(false);
   const [savingAction, setSavingAction] = useState<"save" | "another" | null>(null);
   const [formMessage, setFormMessage] = useState("");
+  const [similarPrompt, setSimilarPrompt] = useState<{ task: Task; similarTasks: Task[]; createAnother: boolean } | null>(null);
   const [draftRecovered, setDraftRecovered] = useState(() => {
     if (editingTask) return false;
     const draft = readDraft(defaultUser);
@@ -212,9 +176,8 @@ export function TaskForm({
       getMissingRequiredFields({
         name: form.name,
         priority: form.priority || undefined,
-        dueDate: form.dueDate || undefined,
       }),
-    [form.dueDate, form.name, form.priority],
+    [form.name, form.priority],
   );
 
   useEffect(() => {
@@ -276,8 +239,8 @@ export function TaskForm({
       ...current,
       name: template.name,
       description: template.description || current.description,
-      estimatedMinutes: String(template.estimatedMinutes),
-      priority: template.priority,
+      estimatedMinutes: template.estimatedMinutes ? String(template.estimatedMinutes) : current.estimatedMinutes,
+      priority: template.priority || current.priority,
     }));
     window.setTimeout(() => nameInputRef.current?.focus(), 0);
   };
@@ -302,15 +265,15 @@ export function TaskForm({
       lastModifiedByUserId: currentUser.uid,
       status: editingTask?.status || "pending",
       recurrence: {
-        type: form.recurrenceType,
+        type: form.dueDate ? form.recurrenceType : "none",
         interval: Math.max(1, Number(form.recurrenceInterval) || 1),
         endDate:
-          form.recurrenceType !== "none" && form.recurrenceEndDate
+          form.dueDate && form.recurrenceType !== "none" && form.recurrenceEndDate
             ? form.recurrenceEndDate
             : undefined,
       },
       recurrenceSeriesId:
-        form.recurrenceType === "none"
+        !form.dueDate || form.recurrenceType === "none"
           ? undefined
           : editingTask?.recurrenceSeriesId || editingTask?.id || crypto.randomUUID(),
       source: editingTask?.source || "manual",
@@ -325,40 +288,57 @@ export function TaskForm({
     };
   };
 
-  const save = async (createAnother: boolean) => {
+  const finishSuccessfulSave = (createAnother: boolean) => {
+    localStorage.removeItem(DRAFT_KEY);
+    localStorage.setItem(
+      DEFAULTS_KEY,
+      JSON.stringify({
+        estimatedMinutes: form.estimatedMinutes,
+        assignedTo: form.assignedTo,
+      } satisfies SavedDefaults),
+    );
+
+    if (createAnother) {
+      const nextState: FormState = {
+        ...form,
+        name: "",
+        description: "",
+        dueDate: "",
+        dueTime: "",
+        priority: "",
+        recurrenceType: "none",
+        recurrenceInterval: "1",
+        recurrenceEndDate: "",
+      };
+      setForm(nextState);
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(nextState));
+      setDraftRecovered(false);
+      setFormMessage("Tarea guardada. Puedes registrar otra.");
+      window.setTimeout(() => nameInputRef.current?.focus(), 0);
+    }
+  };
+
+  const persistTask = async (task: Task, createAnother: boolean) => {
     setSavingAction(createAnother ? "another" : "save");
     try {
-      await onSave(buildTask(), createAnother);
-      localStorage.removeItem(DRAFT_KEY);
-      localStorage.setItem(
-        DEFAULTS_KEY,
-        JSON.stringify({
-          estimatedMinutes: form.estimatedMinutes,
-          assignedTo: form.assignedTo,
-        } satisfies SavedDefaults),
-      );
-
-      if (createAnother) {
-        const nextState: FormState = {
-          ...form,
-          name: "",
-          description: "",
-          dueDate: "",
-          dueTime: "",
-          priority: "",
-          recurrenceType: "none",
-          recurrenceInterval: "1",
-          recurrenceEndDate: "",
-        };
-        setForm(nextState);
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(nextState));
-        setDraftRecovered(false);
-        setFormMessage("Tarea guardada. Puedes registrar otra.");
-        window.setTimeout(() => nameInputRef.current?.focus(), 0);
-      }
+      await onSave(task, createAnother);
+      finishSuccessfulSave(createAnother);
     } finally {
       setSavingAction(null);
     }
+  };
+
+  const save = async (createAnother: boolean) => {
+    const task = buildTask();
+    if (!editingTask && !skipSimilarityCheck && task.name.trim()) {
+      const similarTasks = findSimilarTasks(task);
+      if (similarTasks.length) {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+        setSimilarPrompt({ task, similarTasks, createAnother });
+        return;
+      }
+    }
+    await persistTask(task, createAnother);
   };
 
   const handleSubmit = (event: FormEvent) => {
@@ -409,7 +389,7 @@ export function TaskForm({
                 className="choice-chip template-chip"
                 onClick={() => applyTemplate(template)}
               >
-                {template.label}
+                {template.name}
               </button>
             ))}
           </div>
@@ -451,14 +431,16 @@ export function TaskForm({
       </p>
 
       <fieldset className="quick-group">
-        <legend>Fecha límite <strong className="required-mark">Requerida</strong></legend>
+        <legend>Fecha límite</legend>
         <div className="chip-grid date-presets">
           <button
             type="button"
-            className={`choice-chip ${!form.dueDate ? "selected incomplete-choice" : ""}`}
+            className={`choice-chip ${!form.dueDate ? "selected" : ""}`}
             onClick={() => {
               update("dueDate", "");
               update("dueTime", "");
+              update("recurrenceType", "none");
+              update("recurrenceEndDate", "");
               setShowCustomDate(false);
             }}
           >
@@ -624,6 +606,7 @@ export function TaskForm({
             <label className="field">
               <span>Repetición</span>
               <select
+                disabled={!form.dueDate}
                 value={form.recurrenceType}
                 onChange={(event) =>
                   update("recurrenceType", event.target.value as RecurrenceType)
@@ -642,7 +625,7 @@ export function TaskForm({
                 min="1"
                 inputMode="numeric"
                 type="number"
-                disabled={form.recurrenceType === "none"}
+                disabled={!form.dueDate || form.recurrenceType === "none"}
                 value={form.recurrenceInterval}
                 onChange={(event) => update("recurrenceInterval", event.target.value)}
               />
@@ -652,7 +635,7 @@ export function TaskForm({
               <span>Repetir hasta (opcional)</span>
               <input
                 type="date"
-                disabled={form.recurrenceType === "none"}
+                disabled={!form.dueDate || form.recurrenceType === "none"}
                 min={form.dueDate || undefined}
                 value={form.recurrenceEndDate}
                 onChange={(event) => update("recurrenceEndDate", event.target.value)}
@@ -670,7 +653,6 @@ export function TaskForm({
             Faltan: {formatMissingRequiredFields({
               name: form.name,
               priority: form.priority || undefined,
-              dueDate: form.dueDate || undefined,
             })}. No aparecerá en el panel hasta completar esos datos.
           </span>
         </div>
@@ -685,6 +667,55 @@ export function TaskForm({
       {!editingTask && (
         <div className="draft-status" aria-live="polite">
           Borrador guardado automáticamente en este dispositivo.
+        </div>
+      )}
+
+      {similarPrompt && (
+        <div className="similar-task-prompt" role="alertdialog" aria-modal="true" aria-labelledby="similar-task-title">
+          <div className="similar-task-prompt-card">
+            <span className="eyebrow">Posible duplicado</span>
+            <h3 id="similar-task-title">Estas tareas similares ya existen. ¿Seguro que quieres crear esta tarea?</h3>
+            <div className="similar-task-preview-list">
+              {similarPrompt.similarTasks.slice(0, 4).map((task) => (
+                <div key={task.id}>
+                  <strong>{task.name}</strong>
+                  <span>{task.assignedTo}{task.dueDate ? ` · ${task.dueDate}` : " · Sin fecha"}</span>
+                </div>
+              ))}
+            </div>
+            <div className="similar-task-prompt-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => {
+                  localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+                  const prompt = similarPrompt;
+                  setSimilarPrompt(null);
+                  onReviewSimilar(prompt.task, prompt.similarTasks);
+                }}
+              >
+                Revisar tareas similares primero
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => {
+                  const prompt = similarPrompt;
+                  setSimilarPrompt(null);
+                  void persistTask(prompt.task, prompt.createAnother);
+                }}
+              >
+                Crear tarea
+              </button>
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => setSimilarPrompt(null)}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

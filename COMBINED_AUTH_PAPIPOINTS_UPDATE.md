@@ -26,16 +26,19 @@ Las direcciones solo se usan internamente para Firebase Authentication. La inter
 
 ## Niveles
 
-Hay 100 niveles. El inicio de cada nivel se calcula con:
-
-`5 × (nivel - 1) × (nivel + 8)`
+Hay 100 niveles. El costo para subir un nivel comienza en 100 Papipuntos, aumenta 40% por nivel y se limita a un máximo de 500 Papipuntos por nivel.
 
 Ejemplos:
 
-- Nivel 2: 50 Papipuntos
-- Nivel 10: 810 Papipuntos
-- Nivel 50: 14,210 Papipuntos
-- Nivel 100: 53,460 Papipuntos
+- Nivel 2: 100 Papipuntos acumulados.
+- Nivel 3: 240 Papipuntos acumulados.
+- Nivel 4: 436 Papipuntos acumulados.
+- Nivel 5: 710 Papipuntos acumulados.
+- Nivel 6: 1,094 Papipuntos acumulados.
+- Nivel 10: 3,094 Papipuntos acumulados.
+- Nivel 100: 48,094 Papipuntos acumulados.
+
+La barra de progreso se reinicia visualmente en cada nivel y muestra solo el avance dentro del nivel actual.
 
 ## Repetición
 
@@ -58,5 +61,7 @@ La aplicación utiliza:
 - `/tasks`
 - `/papipoints/transactions`
 - `/papipoints/rewards`
+- `/taskTemplates/items`
+- `/taskTemplates/initialized`
 
 Cada movimiento de Papipuntos usa un identificador estable para evitar duplicarlo al reintentar una sincronización sin conexión.

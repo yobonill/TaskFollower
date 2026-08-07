@@ -1,4 +1,4 @@
-const CACHE_NAME = "taskfollower-shell-v4";
+const CACHE_NAME = "taskfollower-shell-v5";
 const APP_ROOT = self.registration.scope;
 const SHELL_URLS = [
   APP_ROOT,

@@ -44,6 +44,8 @@ const emptyRewardForm = {
 
 export function LevelProgress({ profile }: { profile: PapipointsProfile }) {
   const maximum = profile.level >= MAX_LEVEL;
+  const currentLevelProgress = Math.max(0, profile.balance - profile.currentLevelStart);
+  const currentLevelRequirement = Math.max(1, profile.nextLevelTarget - profile.currentLevelStart);
   return (
     <article className="level-card">
       <div className="level-card-heading">
@@ -57,16 +59,16 @@ export function LevelProgress({ profile }: { profile: PapipointsProfile }) {
         className="level-progress"
         role="progressbar"
         aria-label={`Progreso de nivel de ${profile.userName}`}
-        aria-valuemin={profile.currentLevelStart}
-        aria-valuemax={profile.nextLevelTarget}
-        aria-valuenow={profile.balance}
+        aria-valuemin={0}
+        aria-valuemax={maximum ? 1 : currentLevelRequirement}
+        aria-valuenow={maximum ? 1 : currentLevelProgress}
       >
         <span style={{ width: `${profile.progressPercent}%` }} />
       </div>
       <small>
         {maximum
           ? "NIVEL MÁXIMO"
-          : `${profile.balance.toLocaleString("es-DO")} / ${profile.nextLevelTarget.toLocaleString("es-DO")} Papipuntos`}
+          : `${currentLevelProgress.toLocaleString("es-DO")} / ${currentLevelRequirement.toLocaleString("es-DO")} Papipuntos para este nivel`}
       </small>
     </article>
   );

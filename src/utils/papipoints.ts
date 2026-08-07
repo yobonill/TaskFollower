@@ -7,6 +7,9 @@ import { getTaskDate } from "./taskDates";
 
 export const MAX_LEVEL = 100;
 export const TASK_CREATION_POINTS = 2;
+export const LEVEL_GROWTH = 1.4;
+export const FIRST_LEVEL_REQUIREMENT = 100;
+export const LEVEL_REQUIREMENT_CAP = 500;
 
 /**
  * Existing tasks that were already overdue before this release are not
@@ -35,10 +38,23 @@ export const OVERDUE_PENALTY: Record<TaskPriority, number> = {
   critical: 12,
 };
 
+/** Papipoints required to advance from `level` to `level + 1`. */
+export const getPointsNeededForNextLevel = (level: number): number => {
+  const safeLevel = Math.min(MAX_LEVEL - 1, Math.max(1, Math.floor(level)));
+  const exponentialRequirement = Math.round(
+    FIRST_LEVEL_REQUIREMENT * LEVEL_GROWTH ** (safeLevel - 1),
+  );
+  return Math.min(LEVEL_REQUIREMENT_CAP, exponentialRequirement);
+};
+
 /** Cumulative Papipoints required to be at the start of a level. */
 export const getPointsRequiredForLevel = (level: number): number => {
   const safeLevel = Math.min(MAX_LEVEL, Math.max(1, Math.floor(level)));
-  return 5 * (safeLevel - 1) * (safeLevel + 8);
+  let total = 0;
+  for (let currentLevel = 1; currentLevel < safeLevel; currentLevel += 1) {
+    total += getPointsNeededForNextLevel(currentLevel);
+  }
+  return total;
 };
 
 export const getLevelFromPapipoints = (papipoints: number): number => {
@@ -112,7 +128,7 @@ export const isCompletedEarly = (task: Task, completedAt: string): boolean => {
 };
 
 export const isEligibleForOverduePenalty = (task: Task): boolean => {
-  if (task.status !== "pending" || !task.priority) return false;
+  if (task.status !== "pending" || !task.priority || !task.dueDate) return false;
   const due = getTaskDate(task);
   if (!due || due.getTime() >= Date.now()) return false;
   return due.getTime() > new Date(PAPIPOINTS_ACTIVATION_AT).getTime();

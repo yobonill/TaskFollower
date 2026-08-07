@@ -2284,3 +2284,287 @@ h2 {
     justify-self: end;
   }
 }
+
+/* Dashboard filters, grouped task sections, similar-task review and editable templates */
+.summary-strip > button {
+  cursor: pointer;
+  transition: background 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.summary-strip > button.summary-active {
+  background: #eef4ff;
+  box-shadow: inset 0 0 0 2px rgba(47, 111, 237, 0.2);
+}
+
+.summary-strip > button.summary-active strong,
+.summary-strip > button.summary-active span {
+  color: var(--primary);
+}
+
+.dashboard-groups,
+.dashboard-filtered-section {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.dashboard-task-group {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.dashboard-task-group + .dashboard-task-group {
+  padding-top: 0.85rem;
+  border-top: 2px solid #dce4ef;
+}
+
+.today-task-group {
+  padding-top: 0.2rem;
+}
+
+.undated-task-group {
+  border-top-style: dashed !important;
+}
+
+.dashboard-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dashboard-section-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dashboard-section-heading small,
+.section-empty {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.section-empty {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px dashed var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.section-count {
+  min-width: 30px;
+  padding: 0.25rem 0.48rem;
+  border-radius: 999px;
+  color: #41516a;
+  background: #edf2f8;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.dashboard-incomplete-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.9rem;
+  border: 1px solid #ead8bc;
+  border-left: 4px solid #c88425;
+  border-radius: 13px;
+  background: #fffaf2;
+}
+
+.dashboard-incomplete-card h2,
+.dashboard-incomplete-card p {
+  margin: 0;
+}
+
+.dashboard-incomplete-card p,
+.dashboard-incomplete-card small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.dashboard-incomplete-card .button {
+  align-self: flex-start;
+}
+
+.similar-review-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #d8c6f3;
+  border-radius: 13px;
+  background: #faf7ff;
+}
+
+.similar-review-banner > div:first-child {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.similar-review-banner strong {
+  font-size: 0.95rem;
+}
+
+.similar-review-banner small {
+  color: var(--muted);
+}
+
+.similar-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.similar-task-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.similar-task-prompt-card {
+  width: min(560px, 100%);
+  padding: 1rem;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.similar-task-prompt-card h3 {
+  margin: 0 0 0.8rem;
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.similar-task-preview-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.9rem;
+}
+
+.similar-task-preview-list > div {
+  display: grid;
+  gap: 0.12rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.similar-task-preview-list span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.similar-task-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.templates-manager-panel {
+  margin-bottom: 1rem;
+}
+
+.templates-manager-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.template-management-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.template-management-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.template-management-row > div:first-child {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.template-management-row span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.template-manager-form {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.template-manager-form h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 760px) {
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .summary-strip > button {
+    min-width: 0;
+    padding: 0.48rem 0.2rem;
+  }
+
+  .summary-strip > button:last-child {
+    border-right: 0;
+  }
+
+  .dashboard-task-group + .dashboard-task-group {
+    padding-top: 0.75rem;
+  }
+
+  .similar-review-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .similar-review-actions,
+  .similar-task-prompt-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .similar-review-actions .button,
+  .similar-task-prompt-actions .button {
+    width: 100%;
+  }
+
+  .templates-manager-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .template-management-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

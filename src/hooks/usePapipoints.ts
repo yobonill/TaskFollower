@@ -8,6 +8,7 @@ import type {
   PapipointsTransaction,
 } from "../models/gamification";
 import type { Task } from "../models/task";
+import { isTaskOverdue } from "../utils/taskDates";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
 import {
   COMPLETION_POINTS,
@@ -175,7 +176,7 @@ export interface UsePapipointsResult {
   ) => Promise<number>;
   removeTaskCompletionRewards: (taskId: string) => Promise<number>;
   removeAllTaskTransactions: (taskId: string) => Promise<number>;
-  applyOverduePenalty: (task: Task) => Promise<number>;
+  applyOverduePenalty: (task: Task, force?: boolean) => Promise<number>;
   saveReward: (reward: PapipointsReward) => Promise<void>;
   deleteReward: (rewardId: string) => Promise<void>;
   redeemReward: (reward: PapipointsReward) => Promise<RedeemResult>;
@@ -420,8 +421,9 @@ export const usePapipoints = (
   );
 
   const applyOverduePenalty = useCallback(
-    async (task: Task): Promise<number> => {
-      if (!task.priority || !isEligibleForOverduePenalty(task)) return 0;
+    async (task: Task, force = false): Promise<number> => {
+      if (!task.priority) return 0;
+      if (force ? !isTaskOverdue(task) : !isEligibleForOverduePenalty(task)) return 0;
       const transactionId = `task-overdue:${task.id}`;
       if (readCachedTransactions().some((item) => item.id === transactionId)) {
         return 0;

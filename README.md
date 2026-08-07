@@ -5,16 +5,16 @@ A focused shared task dashboard for Yisel and Yorki.
 ## Current first version
 
 - Dashboard showing the next task by deadline.
-- Urgency-based visual accents.
-- All / Yisel / Yorki filtering.
-- Create and edit tasks.
+- Priority-based visual accents.
+- User filtering plus clickable counters for overdue, today, pending, undated, and incomplete tasks.
+- Create and edit tasks, with similar-task warnings before creating possible duplicates.
 - Complete tasks directly from the dashboard.
-- Simple daily, weekly, and monthly recurrence.
+- Daily, weekly, and monthly recurrence with an optional end date.
 - Completed-task history.
 - JSON export, merge import, and replace import.
 - Firebase Realtime Database synchronization.
 - Local browser cache and retry queue when synchronization fails.
-- Responsive desktop and phone layout.
+- Editable shared task templates and responsive desktop/phone layout.
 - GitHub Pages deployment workflow.
 
 ## Start

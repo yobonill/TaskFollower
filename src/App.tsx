@@ -9,12 +9,14 @@ import {
 import { LoginScreen } from "./components/LoginScreen";
 import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
-import { TaskForm } from "./components/TaskForm";
+import { TASK_FORM_DRAFT_KEY, TaskForm } from "./components/TaskForm";
+import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
 import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
 import { usePapipoints } from "./hooks/usePapipoints";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useTasks } from "./hooks/useTasks";
+import { useTemplates } from "./hooks/useTemplates";
 import {
   USERS,
   type Task,
@@ -35,12 +37,14 @@ import {
   sortPendingTasks,
 } from "./utils/taskDates";
 import { getLevelFromPapipoints } from "./utils/papipoints";
+import { findSimilarOpenTasks } from "./utils/taskSimilarity";
 import "./styles.css";
 
 const USER_FILTER_KEY = "taskFollower.taskFilter.v1";
 const APP_LOCALE = "es-DO";
 
 type View = "dashboard" | "manage" | "papipoints";
+type DashboardFilter = "all" | "overdue" | "today" | "pending" | "undated" | "incomplete" | "similar";
 type ImportMode = "merge" | "replace";
 
 interface ToastState {
@@ -118,12 +122,23 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     redeemReward,
     retrySync: retryPapipointsSync,
   } = usePapipoints(currentUser);
+  const {
+    templates,
+    pendingCount: templatesPendingCount,
+    saveTemplate,
+    deleteTemplate,
+    retrySync: retryTemplatesSync,
+  } = useTemplates(currentUser);
   const { canInstall, install } = usePwaInstall();
 
   const [selectedUser, setSelectedUser] = useState<UserFilter>(() =>
     readSelectedUser(currentUser.name),
   );
   const [view, setView] = useState<View>("dashboard");
+  const [dashboardFilter, setDashboardFilter] = useState<DashboardFilter>("all");
+  const [similarTaskIds, setSimilarTaskIds] = useState<string[]>([]);
+  const [reviewDraft, setReviewDraft] = useState<Task | null>(null);
+  const [reviewEditing, setReviewEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -138,7 +153,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const pointsTimerRef = useRef<number | null>(null);
   const overdueCheckRef = useRef(new Set<string>());
 
-  const totalPendingCount = taskPendingCount + papipointsPendingCount;
+  const totalPendingCount = taskPendingCount + papipointsPendingCount + templatesPendingCount;
 
   const showToast = useCallback((nextToast: ToastState, duration = 9000) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -231,6 +246,40 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     () => pendingTasks.filter(isTaskDueToday),
     [pendingTasks],
   );
+  const undatedTasks = useMemo(
+    () => pendingTasks.filter((task) => !task.dueDate),
+    [pendingTasks],
+  );
+  const todaySectionTasks = useMemo(
+    () => pendingTasks.filter((task) => isTaskOverdue(task) || isTaskDueToday(task)),
+    [pendingTasks],
+  );
+  const upcomingTasks = useMemo(
+    () =>
+      pendingTasks.filter(
+        (task) => task.dueDate && !isTaskOverdue(task) && !isTaskDueToday(task),
+      ),
+    [pendingTasks],
+  );
+  const similarReviewTasks = useMemo(
+    () =>
+      sortPendingTasks(
+        tasks.filter(
+          (task) =>
+            similarTaskIds.includes(task.id) &&
+            task.status === "pending",
+        ),
+      ),
+    [similarTaskIds, tasks],
+  );
+  const dashboardFilteredTasks = useMemo(() => {
+    if (dashboardFilter === "overdue") return overdueTasks;
+    if (dashboardFilter === "today") return dueTodayTasks;
+    if (dashboardFilter === "pending") return pendingTasks;
+    if (dashboardFilter === "undated") return undatedTasks;
+    if (dashboardFilter === "similar") return similarReviewTasks;
+    return pendingTasks;
+  }, [dashboardFilter, dueTodayTasks, overdueTasks, pendingTasks, similarReviewTasks, undatedTasks]);
   const workloadTasks = useMemo(
     () =>
       pendingTasks.filter(
@@ -273,12 +322,14 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const openCreateForm = () => {
     setEditingTask(null);
+    setReviewEditing(false);
     setShowForm(true);
     setMenuOpen(false);
   };
 
   const openEditForm = (task: Task) => {
     setEditingTask(task);
+    setReviewEditing(false);
     setShowForm(true);
   };
 
@@ -287,8 +338,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     setShowForm(false);
   };
 
-  const handleSave = async (task: Task, createAnother: boolean) => {
-    const wasEditing = Boolean(editingTask);
+  const persistTask = async (task: Task, wasEditing: boolean) => {
     const complete = isTaskDataComplete(task);
     await saveTask(task);
 
@@ -307,7 +357,45 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       },
       complete ? 3200 : 6500,
     );
+  };
+
+  const clearSimilarReview = (clearDraft = false) => {
+    setReviewDraft(null);
+    setSimilarTaskIds([]);
+    setReviewEditing(false);
+    if (dashboardFilter === "similar") setDashboardFilter("all");
+    if (clearDraft) localStorage.removeItem(TASK_FORM_DRAFT_KEY);
+  };
+
+  const handleSave = async (task: Task, createAnother: boolean) => {
+    const wasEditing = Boolean(editingTask);
+    await persistTask(task, wasEditing);
+    if (reviewEditing) clearSimilarReview(true);
     if (!createAnother) closeForm();
+  };
+
+  const handleReviewSimilar = (draft: Task, similarTasks: Task[]) => {
+    setReviewDraft(draft);
+    setSimilarTaskIds(similarTasks.map((task) => task.id));
+    setDashboardFilter("similar");
+    setReviewEditing(false);
+    setView("dashboard");
+    setShowForm(false);
+    setEditingTask(null);
+    setMenuOpen(false);
+  };
+
+  const createReviewedDraft = async () => {
+    if (!reviewDraft) return;
+    await persistTask(reviewDraft, false);
+    clearSimilarReview(true);
+  };
+
+  const editReviewedDraft = () => {
+    if (!reviewDraft) return;
+    setReviewEditing(true);
+    setEditingTask(null);
+    setShowForm(true);
   };
 
   const handleComplete = async (task: Task) => {
@@ -376,6 +464,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handlePostpone = async (task: Task, dueDate: string) => {
+    if (isTaskOverdue(task)) {
+      const amount = await applyOverduePenalty(task, true);
+      if (amount) {
+        showPointsFeedback(amount, `Tarea vencida: ${task.name}`, task.assignedTo);
+      }
+    }
+
     await saveTask({
       ...task,
       dueDate,
@@ -387,7 +482,11 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       updatedAt: new Date().toISOString(),
     });
     overdueCheckRef.current.delete(task.id);
-    showToast({ message: "Fecha límite actualizada." }, 3200);
+    showToast({
+      message: isTaskOverdue(task)
+        ? "Tarea pospuesta. La penalización por vencimiento se mantiene."
+        : "Fecha límite actualizada sin penalización.",
+    }, 3800);
   };
 
   const handleCancelTask = async (task: Task) => {
@@ -553,11 +652,17 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const retryAllSync = async () => {
-    await Promise.all([retryTaskSync(), retryPapipointsSync()]);
+    await Promise.all([retryTaskSync(), retryPapipointsSync(), retryTemplatesSync()]);
   };
 
   const changeView = (nextView: View) => {
     setView(nextView);
+    setMenuOpen(false);
+  };
+
+  const toggleDashboardFilter = (filter: DashboardFilter) => {
+    setView("dashboard");
+    setDashboardFilter((current) => (current === filter ? "all" : filter));
     setMenuOpen(false);
   };
 
@@ -572,6 +677,45 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     selectedUser === "all"
       ? [profiles.Yorki, profiles.Yisel]
       : [profiles[selectedUser]];
+
+  const renderDashboardTasks = (items: Task[]) => (
+    <div className="task-grid task-grid-dashboard">
+      {items.map((task, index) =>
+        isTaskDataComplete(task) ? (
+          <TaskCard
+            key={task.id}
+            featured={index === 0}
+            task={task}
+            onComplete={(item) => void handleComplete(item)}
+            onEdit={openEditForm}
+            onDuplicate={(item) => void handleDuplicate(item)}
+            onReassign={(item, user) => void handleReassign(item, user)}
+            onPostpone={(item, dueDate) => void handlePostpone(item, dueDate)}
+            onCancelTask={(item) => void handleCancelTask(item)}
+            onDelete={(item) => void handleDelete(item)}
+          />
+        ) : (
+          <article className="dashboard-incomplete-card" key={task.id}>
+            <span className="status-pill status-incomplete">Incompleta</span>
+            <h2>{task.name.trim() || "Tarea sin nombre"}</h2>
+            <p>Faltan: {formatMissingRequiredFields(task)}</p>
+            <small>Asignada a {task.assignedTo}</small>
+            <button className="button button-primary" type="button" onClick={() => openEditForm(task)}>
+              Completar datos
+            </button>
+          </article>
+        ),
+      )}
+    </div>
+  );
+
+  const filterLabels: Record<Exclude<DashboardFilter, "all" | "similar">, string> = {
+    overdue: "Tareas vencidas",
+    today: "Tareas para hoy",
+    pending: "Todas las tareas pendientes",
+    undated: "Tareas sin fecha",
+    incomplete: "Tareas incompletas",
+  };
 
   return (
     <div className={`app-shell ${menuOpen ? "menu-open" : "menu-collapsed"}`}>
@@ -750,11 +894,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           <section className="dashboard-section">
             <header className="dashboard-toolbar dashboard-toolbar-compact">
               <h1>
-                {selectedUser === "all"
-                  ? "Todas las tareas"
-                  : selectedUser === currentUser.name
-                    ? "Mis tareas"
-                    : `Tareas de ${selectedUser}`}
+                {dashboardFilter === "similar"
+                  ? "Revisar tareas similares"
+                  : selectedUser === "all"
+                    ? "Todas las tareas"
+                    : selectedUser === currentUser.name
+                      ? "Mis tareas"
+                      : `Tareas de ${selectedUser}`}
               </h1>
 
               <div className="dashboard-levels">
@@ -763,24 +909,43 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 ))}
               </div>
 
-              <div className="summary-strip" aria-label="Resumen de tareas">
-                <div className={overdueTasks.length ? "summary-danger" : ""}>
-                  <strong>{overdueTasks.length}</strong>
-                  <span>Vencidas</span>
-                </div>
-                <div>
-                  <strong>{dueTodayTasks.length}</strong>
-                  <span>Para hoy</span>
-                </div>
-                <div>
-                  <strong>{pendingTasks.length}</strong>
-                  <span>Pendientes</span>
-                </div>
+              <div className="summary-strip" aria-label="Resumen y filtros de tareas">
                 <button
                   type="button"
-                  className={incompleteTasks.length ? "summary-incomplete" : ""}
-                  onClick={() => changeView("manage")}
-                  title="Ver tareas con datos incompletos"
+                  className={`${overdueTasks.length ? "summary-danger" : ""} ${dashboardFilter === "overdue" ? "summary-active" : ""}`}
+                  onClick={() => toggleDashboardFilter("overdue")}
+                >
+                  <strong>{overdueTasks.length}</strong>
+                  <span>Vencidas</span>
+                </button>
+                <button
+                  type="button"
+                  className={dashboardFilter === "today" ? "summary-active" : ""}
+                  onClick={() => toggleDashboardFilter("today")}
+                >
+                  <strong>{dueTodayTasks.length}</strong>
+                  <span>Para hoy</span>
+                </button>
+                <button
+                  type="button"
+                  className={dashboardFilter === "pending" ? "summary-active" : ""}
+                  onClick={() => toggleDashboardFilter("pending")}
+                >
+                  <strong>{pendingTasks.length}</strong>
+                  <span>Pendientes</span>
+                </button>
+                <button
+                  type="button"
+                  className={dashboardFilter === "undated" ? "summary-active" : ""}
+                  onClick={() => toggleDashboardFilter("undated")}
+                >
+                  <strong>{undatedTasks.length}</strong>
+                  <span>Sin fecha</span>
+                </button>
+                <button
+                  type="button"
+                  className={`${incompleteTasks.length ? "summary-incomplete" : ""} ${dashboardFilter === "incomplete" ? "summary-active" : ""}`}
+                  onClick={() => toggleDashboardFilter("incomplete")}
                 >
                   <strong>{incompleteTasks.length}</strong>
                   <span>Incompletas</span>
@@ -801,22 +966,88 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               </div>
             </header>
 
-            {pendingTasks.length ? (
-              <div className="task-grid task-grid-dashboard">
-                {pendingTasks.map((task, index) => (
-                  <TaskCard
-                    key={task.id}
-                    featured={index === 0}
-                    task={task}
-                    onComplete={(item) => void handleComplete(item)}
-                    onEdit={openEditForm}
-                    onDuplicate={(item) => void handleDuplicate(item)}
-                    onReassign={(item, user) => void handleReassign(item, user)}
-                    onPostpone={(item, dueDate) => void handlePostpone(item, dueDate)}
-                    onCancelTask={(item) => void handleCancelTask(item)}
-                    onDelete={(item) => void handleDelete(item)}
-                  />
-                ))}
+            {reviewDraft && (
+              <section className="similar-review-banner">
+                <div>
+                  <span className="eyebrow">Revisión antes de crear</span>
+                  <strong>“{reviewDraft.name || "Tarea sin nombre"}”</strong>
+                  <small>Revisa las tareas similares. Tu nueva tarea todavía no ha sido creada.</small>
+                </div>
+                <div className="similar-review-actions">
+                  <button className="button button-primary" type="button" onClick={() => void createReviewedDraft()}>
+                    Crear tarea
+                  </button>
+                  <button className="button button-secondary" type="button" onClick={editReviewedDraft}>
+                    Editar antes de crear
+                  </button>
+                  <button className="button button-quiet" type="button" onClick={() => clearSimilarReview(true)}>
+                    Cancelar
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {dashboardFilter !== "all" ? (
+              <section className="dashboard-filtered-section">
+                <div className="dashboard-section-heading">
+                  <div>
+                    <span className="eyebrow">Filtro activo</span>
+                    <h2>
+                      {dashboardFilter === "similar"
+                        ? "Tareas similares"
+                        : filterLabels[dashboardFilter as Exclude<DashboardFilter, "all" | "similar">]}
+                    </h2>
+                  </div>
+                  <button className="button button-quiet" type="button" onClick={() => setDashboardFilter("all")}>
+                    Quitar filtro
+                  </button>
+                </div>
+
+                {dashboardFilter === "incomplete"
+                  ? incompleteTasks.length
+                    ? renderDashboardTasks(incompleteTasks)
+                    : <p className="section-empty">No hay tareas incompletas.</p>
+                  : dashboardFilteredTasks.length
+                    ? renderDashboardTasks(dashboardFilteredTasks)
+                    : <p className="section-empty">No hay tareas en este filtro.</p>}
+              </section>
+            ) : pendingTasks.length ? (
+              <div className="dashboard-groups">
+                <section className="dashboard-task-group today-task-group">
+                  <div className="dashboard-section-heading">
+                    <div>
+                      <span className="eyebrow">Prioridad del día</span>
+                      <h2>Hoy</h2>
+                    </div>
+                    <span className="section-count">{todaySectionTasks.length}</span>
+                  </div>
+                  {todaySectionTasks.length
+                    ? renderDashboardTasks(todaySectionTasks)
+                    : <p className="section-empty">No tienes tareas para hoy ni tareas vencidas.</p>}
+                </section>
+
+                {upcomingTasks.length > 0 && (
+                  <section className="dashboard-task-group">
+                    <div className="dashboard-section-heading">
+                      <h2>Próximas</h2>
+                      <span className="section-count">{upcomingTasks.length}</span>
+                    </div>
+                    {renderDashboardTasks(upcomingTasks)}
+                  </section>
+                )}
+
+                {undatedTasks.length > 0 && (
+                  <section className="dashboard-task-group undated-task-group">
+                    <div className="dashboard-section-heading">
+                      <div>
+                        <h2>Sin fecha</h2>
+                        <small>Tareas válidas que no tienen una fecha límite.</small>
+                      </div>
+                      <span className="section-count">{undatedTasks.length}</span>
+                    </div>
+                    {renderDashboardTasks(undatedTasks)}
+                  </section>
+                )}
               </div>
             ) : (
               <section className="empty-state">
@@ -824,12 +1055,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 <h2>{incompleteTasks.length ? "No hay tareas listas" : "No hay tareas pendientes"}</h2>
                 <p>
                   {incompleteTasks.length
-                    ? "Hay tareas guardadas que todavía necesitan nombre, prioridad o fecha límite."
+                    ? "Hay tareas guardadas que todavía necesitan nombre o prioridad."
                     : "Todo en esta vista está completado."}
                 </p>
                 <button
                   className="button button-primary"
-                  onClick={() => incompleteTasks.length ? changeView("manage") : openCreateForm()}
+                  onClick={() => incompleteTasks.length ? toggleDashboardFilter("incomplete") : openCreateForm()}
                 >
                   {incompleteTasks.length ? "Completar datos" : "Crear una tarea"}
                 </button>
@@ -881,11 +1112,19 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               />
             </div>
 
+            <TaskTemplatesPanel
+              currentUser={currentUser}
+              templates={templates}
+              onSave={saveTemplate}
+              onDelete={deleteTemplate}
+              onMessage={(message) => showToast({ message }, 3600)}
+            />
+
             <div className="task-list-panel incomplete-panel">
               <div className="list-heading">
                 <div>
                   <h2>Tareas incompletas</h2>
-                  <small>No aparecen en el panel hasta completar los campos requeridos.</small>
+                  <small>No aparecen en el panel hasta completar el nombre y la prioridad.</small>
                 </div>
                 <span>{incompleteTasks.length}</span>
               </div>
@@ -1100,6 +1339,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             <TaskForm
               editingTask={editingTask}
               currentUser={currentUser}
+              templates={templates}
+              findSimilarTasks={(candidate) => findSimilarOpenTasks(candidate, tasks)}
+              skipSimilarityCheck={reviewEditing}
+              onReviewSimilar={handleReviewSimilar}
               onSave={handleSave}
               onCancel={closeForm}
             />
