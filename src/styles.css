@@ -134,7 +134,7 @@ p {
 }
 
 .brand-name {
-  font-size: 0.98rem;
+  font-size: 1.176rem;
   white-space: nowrap;
 }
 
@@ -147,7 +147,7 @@ p {
   border-radius: 9px;
   color: #526077;
   background: #eef2f7;
-  font-size: 0.95rem;
+  font-size: 1.14rem;
   font-weight: 900;
 }
 
@@ -195,7 +195,7 @@ p {
   width: 30px;
   flex: 0 0 30px;
   place-items: center;
-  font-size: 1.08rem;
+  font-size: 1.296rem;
 }
 
 .sidebar-label {
@@ -226,7 +226,7 @@ p {
   display: block;
   margin-bottom: 0.32rem;
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -278,7 +278,7 @@ p {
   border-radius: 10px;
   color: #5f6d81;
   background: #f3f6fa;
-  font-size: 0.67rem;
+  font-size: 0.804rem;
 }
 
 .menu-collapsed .sidebar-sync {
@@ -365,7 +365,7 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: clamp(1.25rem, 2vw, 1.7rem);
+  font-size: clamp(1.375rem, 2.2vw, 1.87rem);
   line-height: 1.15;
   letter-spacing: -0.03em;
 }
@@ -379,7 +379,7 @@ h2 {
   display: block;
   margin-bottom: 0.2rem;
   color: var(--primary);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
   font-weight: 900;
   letter-spacing: 0.11em;
   text-transform: uppercase;
@@ -416,13 +416,13 @@ h2 {
 }
 
 .summary-strip strong {
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .summary-strip span {
   margin-top: 0.04rem;
   color: var(--muted);
-  font-size: 0.61rem;
+  font-size: 0.732rem;
   font-weight: 800;
 }
 
@@ -504,7 +504,7 @@ h2 {
   align-items: center;
   padding: 0.14rem 0.42rem;
   border-radius: 999px;
-  font-size: 0.58rem;
+  font-size: 0.696rem;
   font-weight: 900;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -533,7 +533,7 @@ h2 {
 .task-card h2 {
   overflow-wrap: anywhere;
   margin-bottom: 0.35rem;
-  font-size: 1.05rem;
+  font-size: 1.26rem;
   line-height: 1.25;
 }
 
@@ -542,7 +542,7 @@ h2 {
   overflow: hidden;
   margin-bottom: 0.58rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.936rem;
   line-height: 1.4;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -556,7 +556,7 @@ h2 {
   gap: 0.3rem;
   margin: auto 0 0.75rem;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.9rem;
 }
 
 .task-compact-meta strong {
@@ -577,7 +577,7 @@ h2 {
   border-radius: 9px;
   color: #526077;
   background: #eef2f7;
-  font-size: 1.22rem;
+  font-size: 1.342rem;
   line-height: 1;
 }
 
@@ -604,7 +604,7 @@ h2 {
   border-radius: 8px;
   color: #354258;
   background: transparent;
-  font-size: 0.76rem;
+  font-size: 0.912rem;
   font-weight: 750;
   text-align: left;
 }
@@ -639,7 +639,7 @@ h2 {
   display: block;
   margin-bottom: 0.3rem;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.792rem;
   font-weight: 800;
 }
 
@@ -661,7 +661,7 @@ h2 {
   padding: 0.52rem 0.8rem;
   border: 1px solid transparent;
   border-radius: 9px;
-  font-size: 0.8rem;
+  font-size: 0.96rem;
   font-weight: 850;
   transition:
     transform 120ms ease,
@@ -719,7 +719,7 @@ h2 {
   border-radius: 50%;
   color: #1d8b5a;
   background: #e1f5eb;
-  font-size: 1.3rem;
+  font-size: 1.43rem;
   font-weight: 900;
 }
 
@@ -731,7 +731,7 @@ h2 {
   max-width: 700px;
   margin: 0.35rem 0 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 1.008rem;
 }
 
 .data-actions {
@@ -763,7 +763,7 @@ h2 {
 }
 
 .list-heading h2 {
-  font-size: 0.92rem;
+  font-size: 1.104rem;
 }
 
 .list-heading span {
@@ -774,7 +774,7 @@ h2 {
   border-radius: 999px;
   color: var(--primary);
   background: #eaf1ff;
-  font-size: 0.7rem;
+  font-size: 0.84rem;
   font-weight: 900;
 }
 
@@ -809,7 +809,7 @@ h2 {
 .management-main span {
   margin-top: 0.16rem;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .priority-dot {
@@ -857,7 +857,7 @@ h2 {
   border-radius: 7px;
   color: #45536a;
   background: #eef2f7;
-  font-size: 0.68rem;
+  font-size: 0.816rem;
   font-weight: 800;
 }
 
@@ -895,7 +895,7 @@ h2 {
 
 .cancelled-mark {
   color: #b56d1d;
-  font-size: 1.1rem;
+  font-size: 1.32rem;
   font-weight: 900;
 }
 
@@ -945,7 +945,7 @@ h2 {
 }
 
 .form-heading h2 {
-  font-size: 1.3rem;
+  font-size: 1.43rem;
 }
 
 .icon-button {
@@ -958,7 +958,7 @@ h2 {
   border-radius: 10px;
   color: #59667a;
   background: #edf1f6;
-  font-size: 1.4rem;
+  font-size: 1.54rem;
 }
 
 .draft-notice {
@@ -972,7 +972,7 @@ h2 {
   border-radius: 10px;
   color: #34527d;
   background: #eef5ff;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
 }
 
 .draft-notice button {
@@ -991,7 +991,7 @@ h2 {
 .quick-group legend,
 .field span {
   color: #536177;
-  font-size: 0.72rem;
+  font-size: 0.864rem;
   font-weight: 850;
 }
 
@@ -1017,7 +1017,7 @@ h2 {
   border-radius: 10px;
   color: #4e5c72;
   background: #ffffff;
-  font-size: 0.76rem;
+  font-size: 0.912rem;
   font-weight: 800;
 }
 
@@ -1060,7 +1060,7 @@ h2 {
 
 .task-name-field input {
   min-height: 48px;
-  font-size: 1rem;
+  font-size: 1.2rem;
   font-weight: 700;
 }
 
@@ -1151,7 +1151,7 @@ h2 {
 
 .inline-number-field span {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.912rem;
 }
 
 .advanced-toggle {
@@ -1165,7 +1165,7 @@ h2 {
   border-radius: 10px;
   color: #46556b;
   background: #f7f9fc;
-  font-size: 0.78rem;
+  font-size: 0.936rem;
   font-weight: 850;
 }
 
@@ -1186,7 +1186,7 @@ h2 {
 .form-message {
   margin: 0.5rem 0;
   color: #b43333;
-  font-size: 0.76rem;
+  font-size: 0.912rem;
   font-weight: 800;
 }
 
@@ -1197,7 +1197,7 @@ h2 {
 .draft-status {
   margin-top: 0.45rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.816rem;
   text-align: right;
 }
 
@@ -1222,7 +1222,7 @@ h2 {
   color: #ffffff;
   background: var(--primary);
   box-shadow: 0 14px 32px rgba(47, 111, 237, 0.32);
-  font-size: 2rem;
+  font-size: 2.2rem;
   font-weight: 400;
   line-height: 1;
 }
@@ -1259,13 +1259,13 @@ h2 {
 }
 
 .install-banner strong {
-  font-size: 0.82rem;
+  font-size: 0.984rem;
 }
 
 .install-banner span {
   margin-top: 0.12rem;
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: 0.828rem;
 }
 
 .install-close {
@@ -1278,7 +1278,7 @@ h2 {
   border-radius: 8px;
   color: #637087;
   background: #eef2f7;
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .toast {
@@ -1296,7 +1296,7 @@ h2 {
   color: #ffffff;
   background: #1f2b3e;
   box-shadow: 0 14px 38px rgba(8, 16, 29, 0.27);
-  font-size: 0.78rem;
+  font-size: 0.936rem;
   transform: translateX(-50%);
 }
 
@@ -1316,14 +1316,14 @@ h2 {
 
 .toast .toast-close {
   color: #c7d0de;
-  font-size: 1.05rem;
+  font-size: 1.26rem;
 }
 
 
 .required-mark {
   margin-left: 0.35rem;
   color: #b46a0c;
-  font-size: 0.58rem;
+  font-size: 0.696rem;
   font-weight: 900;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1341,7 +1341,7 @@ h2 {
   border: 0;
   color: #8a5b20;
   background: transparent;
-  font-size: 0.7rem;
+  font-size: 0.84rem;
   font-weight: 800;
   text-align: left;
 }
@@ -1356,7 +1356,7 @@ h2 {
   border-radius: 10px;
   color: #704712;
   background: #fff8ed;
-  font-size: 0.73rem;
+  font-size: 0.876rem;
   line-height: 1.4;
 }
 
@@ -1377,7 +1377,7 @@ h2 {
   display: block;
   margin-top: 0.15rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.816rem;
   font-weight: 600;
 }
 
@@ -1393,7 +1393,7 @@ h2 {
   border-radius: 50%;
   color: #9c620f;
   background: #ffedcf;
-  font-size: 0.8rem;
+  font-size: 0.96rem;
   font-weight: 950;
 }
 
@@ -1456,7 +1456,7 @@ h2 {
     border-radius: 9px;
     color: #526077;
     background: #eef2f7;
-    font-size: 1rem;
+    font-size: 1.2rem;
   }
 
   .mobile-brand {
@@ -1468,7 +1468,7 @@ h2 {
     border: 0;
     color: var(--text);
     background: transparent;
-    font-size: 0.87rem;
+    font-size: 1.044rem;
     font-weight: 900;
   }
 
@@ -1486,7 +1486,7 @@ h2 {
     border-radius: 9px;
     color: var(--text);
     background: #ffffff;
-    font-size: 0.75rem;
+    font-size: 0.9rem;
     font-weight: 800;
   }
 
@@ -1560,7 +1560,7 @@ h2 {
   }
 
   .dashboard-toolbar h1 {
-    font-size: 1.18rem;
+    font-size: 1.416rem;
   }
 
   .summary-strip {
@@ -1576,11 +1576,11 @@ h2 {
   }
 
   .summary-strip strong {
-    font-size: 0.9rem;
+    font-size: 1.08rem;
   }
 
   .summary-strip span {
-    font-size: 0.55rem;
+    font-size: 0.66rem;
   }
 
   .task-grid {
@@ -1593,7 +1593,7 @@ h2 {
   }
 
   .task-card h2 {
-    font-size: 1rem;
+    font-size: 1.2rem;
   }
 
   .task-menu {
@@ -1611,7 +1611,7 @@ h2 {
   .task-menu > button,
   .postpone-menu > button {
     min-height: 44px;
-    font-size: 0.82rem;
+    font-size: 0.984rem;
   }
 
   .manage-heading {
@@ -1700,7 +1700,7 @@ h2 {
   .mobile-form-actions .button {
     min-width: 0;
     padding: 0.5rem 0.42rem;
-    font-size: 0.7rem;
+    font-size: 0.84rem;
   }
 
   .floating-add-button {
@@ -1790,13 +1790,13 @@ h2 {
   color: #fff;
   background: var(--primary);
   box-shadow: 0 10px 24px rgba(47, 111, 237, 0.24);
-  font-size: 1.35rem;
+  font-size: 1.485rem;
   font-weight: 900;
 }
 
 .login-card h1 {
   margin: 0.2rem 0 0.55rem;
-  font-size: clamp(1.65rem, 6vw, 2rem);
+  font-size: clamp(1.815rem, 6.6vw, 2.2rem);
 }
 
 .login-intro,
@@ -1807,7 +1807,7 @@ h2 {
 
 .login-intro {
   margin-bottom: 1.2rem;
-  font-size: 0.88rem;
+  font-size: 1.056rem;
 }
 
 .login-user-selector {
@@ -1819,12 +1819,12 @@ h2 {
 .login-user-selector legend {
   margin-bottom: 0.45rem;
   color: #536177;
-  font-size: 0.74rem;
+  font-size: 0.888rem;
   font-weight: 850;
 }
 
 .login-password-field input {
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .login-error {
@@ -1834,7 +1834,7 @@ h2 {
   border-radius: 10px;
   color: #a62f2f;
   background: #fff0f0;
-  font-size: 0.8rem;
+  font-size: 0.96rem;
   line-height: 1.4;
 }
 
@@ -1852,7 +1852,7 @@ h2 {
 
 .login-help {
   margin: 1rem 0 0;
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .auth-loading-page {
@@ -1899,7 +1899,7 @@ h2 {
 .sidebar-account-copy span {
   margin-top: 0.08rem;
   opacity: 0.72;
-  font-size: 0.63rem;
+  font-size: 0.756rem;
 }
 
 .sidebar-logout {
@@ -1908,7 +1908,7 @@ h2 {
   border-radius: 7px;
   color: #fff;
   background: rgba(255, 255, 255, 0.1);
-  font-size: 0.67rem;
+  font-size: 0.804rem;
   font-weight: 850;
 }
 
@@ -1919,7 +1919,7 @@ h2 {
 .task-creator-note {
   margin: -0.3rem 0 0.85rem;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .menu-collapsed .sidebar-account {
@@ -1979,18 +1979,18 @@ h2 {
 
 .level-card-heading span {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.936rem;
   font-weight: 800;
 }
 
 .level-card-heading strong {
-  font-size: 0.92rem;
+  font-size: 1.104rem;
   letter-spacing: 0.025em;
 }
 
 .level-card-heading b {
   color: #7c4fd1;
-  font-size: 0.8rem;
+  font-size: 0.96rem;
   text-align: right;
 }
 
@@ -2013,7 +2013,7 @@ h2 {
 
 .level-card > small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.816rem;
   font-weight: 700;
 }
 
@@ -2037,11 +2037,11 @@ h2 {
 .workload-summary span,
 .workload-summary small {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.912rem;
 }
 
 .workload-summary strong {
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .last-recurrence-label {
@@ -2049,7 +2049,7 @@ h2 {
   border-radius: 999px;
   color: #75520a;
   background: #fff1c7;
-  font-size: 0.64rem;
+  font-size: 0.768rem;
   font-weight: 900;
 }
 
@@ -2087,7 +2087,7 @@ h2 {
 .reward-card p {
   margin: 0.28rem 0 0;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.936rem;
 }
 
 .reward-card > b {
@@ -2110,7 +2110,7 @@ h2 {
 .reward-actions .button {
   min-height: 34px;
   padding: 0.42rem 0.68rem;
-  font-size: 0.76rem;
+  font-size: 0.912rem;
 }
 
 .reward-form {
@@ -2130,7 +2130,7 @@ h2 {
   align-items: center;
   gap: 0.55rem;
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.984rem;
   font-weight: 700;
 }
 
@@ -2157,7 +2157,7 @@ h2 {
 }
 
 .transaction-row > span {
-  font-size: 0.9rem;
+  font-size: 1.08rem;
   font-weight: 950;
 }
 
@@ -2168,7 +2168,7 @@ h2 {
 
 .transaction-row small {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .transaction-positive {
@@ -2206,7 +2206,7 @@ h2 {
 }
 
 .points-feedback strong {
-  font-size: 1.18rem;
+  font-size: 1.416rem;
 }
 
 .points-feedback span,
@@ -2216,13 +2216,13 @@ h2 {
 
 .points-feedback b {
   margin-top: 0.25rem;
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .field small {
   margin-top: 0.3rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.816rem;
   line-height: 1.35;
 }
 
@@ -2334,13 +2334,13 @@ h2 {
 
 .dashboard-section-heading h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.2rem;
 }
 
 .dashboard-section-heading small,
 .section-empty {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.912rem;
 }
 
 .section-empty {
@@ -2357,7 +2357,7 @@ h2 {
   border-radius: 999px;
   color: #41516a;
   background: #edf2f8;
-  font-size: 0.72rem;
+  font-size: 0.864rem;
   font-weight: 900;
   text-align: center;
 }
@@ -2382,7 +2382,7 @@ h2 {
 .dashboard-incomplete-card p,
 .dashboard-incomplete-card small {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.912rem;
 }
 
 .dashboard-incomplete-card .button {
@@ -2407,7 +2407,7 @@ h2 {
 }
 
 .similar-review-banner strong {
-  font-size: 0.95rem;
+  font-size: 1.14rem;
 }
 
 .similar-review-banner small {
@@ -2441,7 +2441,7 @@ h2 {
 
 .similar-task-prompt-card h3 {
   margin: 0 0 0.8rem;
-  font-size: 1.05rem;
+  font-size: 1.26rem;
   line-height: 1.35;
 }
 
@@ -2462,7 +2462,7 @@ h2 {
 
 .similar-task-preview-list span {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .similar-task-prompt-actions {
@@ -2506,7 +2506,7 @@ h2 {
 
 .template-management-row span {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.864rem;
 }
 
 .template-manager-form {
@@ -2520,7 +2520,7 @@ h2 {
 
 .template-manager-form h3 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 1.14rem;
 }
 
 @media (max-width: 760px) {
