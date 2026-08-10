@@ -19,11 +19,12 @@ import type {
   Task,
   TaskPriority,
   TaskAssignee,
+  RecurrenceType,
   UserName,
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
-import { getNextDueDate } from "../utils/taskDates";
+import { getNextDueDate, normalizeWeekdays } from "../utils/taskDates";
 import { getAssigneeUserIds } from "../utils/taskAssignment";
 
 const CACHE_PREFIX = "taskFollower.tasks.v2";
@@ -47,6 +48,13 @@ const isUserName = (value: unknown): value is UserName =>
 
 const isTaskAssignee = (value: unknown): value is TaskAssignee =>
   isUserName(value) || value === "Ambos";
+
+const isRecurrenceType = (value: unknown): value is RecurrenceType =>
+  value === "none" ||
+  value === "daily" ||
+  value === "weekly" ||
+  value === "weekdays" ||
+  value === "monthly";
 
 const normalizeTask = (taskValue: Task | LegacyTask): Task => {
   const task = taskValue as LegacyTask;
@@ -101,6 +109,8 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
       ? task.dueDate
       : undefined;
   const recurrence = task.recurrence || { type: "none" as const, interval: 1 };
+  const recurrenceType =
+    dueDate && isRecurrenceType(recurrence.type) ? recurrence.type : "none";
   const createdAt = task.createdAt || new Date().toISOString();
   const estimatedMinutes = Number(task.estimatedMinutes);
 
@@ -131,18 +141,22 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
       getAppUserByName(assignedBy).uid,
     status: task.status || "pending",
     recurrence: {
-      type: dueDate ? recurrence.type || "none" : "none",
+      type: recurrenceType,
       interval: Math.max(1, Number(recurrence.interval) || 1),
+      weekdays:
+        recurrenceType === "weekdays"
+          ? normalizeWeekdays(recurrence.weekdays)
+          : undefined,
       endDate:
         dueDate &&
-        recurrence.type !== "none" &&
+        recurrenceType !== "none" &&
         typeof recurrence.endDate === "string" &&
         recurrence.endDate.trim()
           ? recurrence.endDate
           : undefined,
     },
     recurrenceSeriesId:
-      dueDate && recurrence.type !== "none"
+      dueDate && recurrenceType !== "none"
         ? task.recurrenceSeriesId
         : undefined,
     source: task.source || "migration",
@@ -613,6 +627,7 @@ export const useTasks = (
         const nextDueDate = getNextDueDate(
           originalTask.dueDate,
           originalTask.recurrence,
+          timestamp,
         );
         const mayCreateNext =
           !originalTask.recurrence.endDate ||

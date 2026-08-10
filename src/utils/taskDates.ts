@@ -1,6 +1,50 @@
-import type { Task, TaskPriority, TaskRecurrence } from "../models/task";
+import type {
+  Task,
+  TaskPriority,
+  TaskRecurrence,
+  WeekdayNumber,
+} from "../models/task";
 
 const APP_LOCALE = "es-DO";
+
+export const WEEKDAY_OPTIONS: ReadonlyArray<{
+  value: WeekdayNumber;
+  shortLabel: string;
+  label: string;
+}> = [
+  { value: 1, shortLabel: "L", label: "Lunes" },
+  { value: 2, shortLabel: "M", label: "Martes" },
+  { value: 3, shortLabel: "X", label: "Miércoles" },
+  { value: 4, shortLabel: "J", label: "Jueves" },
+  { value: 5, shortLabel: "V", label: "Viernes" },
+  { value: 6, shortLabel: "S", label: "Sábado" },
+  { value: 7, shortLabel: "D", label: "Domingo" },
+];
+
+export const WEEKDAY_PRESETS = {
+  weekdays: [1, 2, 3, 4, 5] as WeekdayNumber[],
+  weekend: [6, 7] as WeekdayNumber[],
+  everyDay: [1, 2, 3, 4, 5, 6, 7] as WeekdayNumber[],
+};
+
+export const normalizeWeekdays = (values?: readonly number[]): WeekdayNumber[] =>
+  [...new Set((values || []).filter((value) => value >= 1 && value <= 7))]
+    .sort((a, b) => a - b) as WeekdayNumber[];
+
+const jsDayToWeekdayNumber = (day: number): WeekdayNumber =>
+  (day === 0 ? 7 : day) as WeekdayNumber;
+
+const parseDateOnly = (value: string): Date | null => {
+  const date = new Date(`${value}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const parseDateLike = (value?: string): Date | null => {
+  if (!value) return null;
+  const dateOnlyMatch = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const date = dateOnlyMatch ? parseDateOnly(value) : new Date(value);
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+};
 
 export const toDateInputValue = (date: Date): string => {
   const year = date.getFullYear();
@@ -104,13 +148,73 @@ export const formatDuration = (minutes?: number): string => {
   return remainder ? `${hours} h ${remainder} min` : `${hours} h`;
 };
 
+/**
+ * Returns the first selected weekday on or after the requested start date.
+ * Non-weekday recurrence modes keep the requested date unchanged.
+ */
+export const getRecurrenceStartDate = (
+  requestedDueDate: string,
+  recurrence: TaskRecurrence,
+): string => {
+  if (recurrence.type !== "weekdays") return requestedDueDate;
+
+  const weekdays = normalizeWeekdays(recurrence.weekdays);
+  const date = parseDateOnly(requestedDueDate);
+  if (!date || !weekdays.length) return requestedDueDate;
+
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const candidate = addDays(date, offset);
+    if (weekdays.includes(jsDayToWeekdayNumber(candidate.getDay()))) {
+      return toDateInputValue(candidate);
+    }
+  }
+
+  return requestedDueDate;
+};
+
+/**
+ * Calculates the following recurrence date. For weekday schedules, the next
+ * occurrence is the first selected weekday strictly after the later of the
+ * current due date and the completion date. This prevents late completion from
+ * creating already-missed weekday occurrences retroactively.
+ */
 export const getNextDueDate = (
   currentDueDate: string,
   recurrence: TaskRecurrence,
+  completedAt?: string,
 ): string => {
-  const date = new Date(`${currentDueDate}T12:00:00`);
+  const current = parseDateOnly(currentDueDate);
+  if (!current) return currentDueDate;
+
   const interval = Math.max(1, recurrence.interval || 1);
 
+  if (recurrence.type === "weekdays") {
+    const weekdays = normalizeWeekdays(recurrence.weekdays);
+    if (!weekdays.length) return currentDueDate;
+
+    let base = current;
+    const completed = parseDateLike(completedAt);
+    if (completed) {
+      const completedDate = new Date(
+        completed.getFullYear(),
+        completed.getMonth(),
+        completed.getDate(),
+        12,
+      );
+      if (completedDate.getTime() > base.getTime()) base = completedDate;
+    }
+
+    for (let offset = 1; offset <= 7; offset += 1) {
+      const candidate = addDays(base, offset);
+      if (weekdays.includes(jsDayToWeekdayNumber(candidate.getDay()))) {
+        return toDateInputValue(candidate);
+      }
+    }
+
+    return currentDueDate;
+  }
+
+  const date = new Date(current);
   switch (recurrence.type) {
     case "daily":
       date.setDate(date.getDate() + interval);
@@ -126,4 +230,27 @@ export const getNextDueDate = (
   }
 
   return toDateInputValue(date);
+};
+
+export const formatWeekdayRecurrence = (weekdays?: readonly number[]): string => {
+  const normalized = normalizeWeekdays(weekdays);
+  if (!normalized.length) return "Días de la semana";
+  if (normalized.join(",") === WEEKDAY_PRESETS.weekdays.join(",")) {
+    return "Lunes a viernes";
+  }
+  if (normalized.join(",") === WEEKDAY_PRESETS.weekend.join(",")) {
+    return "Fin de semana";
+  }
+  if (normalized.length === 7) return "Todos los días";
+
+  const labels: Record<WeekdayNumber, string> = {
+    1: "Lun",
+    2: "Mar",
+    3: "Mié",
+    4: "Jue",
+    5: "Vie",
+    6: "Sáb",
+    7: "Dom",
+  };
+  return normalized.map((day) => labels[day]).join(", ");
 };

@@ -5,6 +5,7 @@ import { isFirebaseConfigured } from "../config/firebaseConfig";
 import type { TaskTemplate } from "../models/template";
 import type { RecurrenceType, TaskAssignee, TaskPriority, UserName } from "../models/task";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
+import { normalizeWeekdays } from "../utils/taskDates";
 
 const CACHE_PREFIX = "taskFollower.templates.v3";
 const LEGACY_CACHE_KEY = "taskFollower.templates.v2";
@@ -42,7 +43,11 @@ const isAssignee = (value: unknown): value is TaskAssignee =>
   value === "Yisel" || value === "Yorki" || value === "Ambos";
 
 const isRecurrenceType = (value: unknown): value is RecurrenceType =>
-  value === "none" || value === "daily" || value === "weekly" || value === "monthly";
+  value === "none" ||
+  value === "daily" ||
+  value === "weekly" ||
+  value === "weekdays" ||
+  value === "monthly";
 
 const normalizeTemplate = (
   value: LegacyTemplate,
@@ -89,6 +94,10 @@ const normalizeTemplate = (
     recurrence: {
       type: recurrenceType,
       interval: Math.max(1, Number(value.recurrence?.interval) || 1),
+      weekdays:
+        recurrenceType === "weekdays"
+          ? normalizeWeekdays(value.recurrence?.weekdays)
+          : undefined,
       endDate:
         dueDate &&
         recurrenceType !== "none" &&

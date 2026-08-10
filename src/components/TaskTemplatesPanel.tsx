@@ -5,8 +5,16 @@ import {
   type RecurrenceType,
   type TaskAssignee,
   type TaskPriority,
+  type WeekdayNumber,
 } from "../models/task";
 import type { TaskTemplate } from "../models/template";
+import {
+  WEEKDAY_OPTIONS,
+  WEEKDAY_PRESETS,
+  formatWeekdayRecurrence,
+  getRecurrenceStartDate,
+  normalizeWeekdays,
+} from "../utils/taskDates";
 
 interface TaskTemplatesPanelProps {
   currentUser: AppUserDefinition;
@@ -34,6 +42,7 @@ interface TemplateFormState {
   dueTime: string;
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
+  recurrenceWeekdays: WeekdayNumber[];
   recurrenceEndDate: string;
 }
 
@@ -48,6 +57,7 @@ const createEmptyForm = (defaultAssignee: TaskAssignee): TemplateFormState => ({
   dueTime: "",
   recurrenceType: "none",
   recurrenceInterval: "1",
+  recurrenceWeekdays: [],
   recurrenceEndDate: "",
 });
 
@@ -84,6 +94,7 @@ export function TaskTemplatesPanel({
       dueTime: template.dueTime || "",
       recurrenceType: template.dueDate ? template.recurrence.type : "none",
       recurrenceInterval: String(Math.max(1, template.recurrence.interval || 1)),
+      recurrenceWeekdays: normalizeWeekdays(template.recurrence.weekdays),
       recurrenceEndDate: template.recurrence.endDate || "",
     });
   };
@@ -93,16 +104,102 @@ export function TaskTemplatesPanel({
     value: TemplateFormState[K],
   ) => setForm((current) => ({ ...current, [key]: value }));
 
+  const setRecurrenceType = (type: RecurrenceType) => {
+    setForm((current) => {
+      const selectedWeekdays =
+        type === "weekdays"
+          ? current.recurrenceWeekdays.length
+            ? current.recurrenceWeekdays
+            : current.dueDate
+              ? normalizeWeekdays([
+                  (() => {
+                    const day = new Date(`${current.dueDate}T12:00:00`).getDay();
+                    return day === 0 ? 7 : day;
+                  })(),
+                ])
+              : []
+          : [];
+      return {
+        ...current,
+        recurrenceType: type,
+        recurrenceInterval: type === "weekdays" ? "1" : current.recurrenceInterval,
+        recurrenceWeekdays: selectedWeekdays,
+      };
+    });
+  };
+
+  const toggleRecurrenceWeekday = (weekday: WeekdayNumber) => {
+    setForm((current) => ({
+      ...current,
+      recurrenceWeekdays: current.recurrenceWeekdays.includes(weekday)
+        ? current.recurrenceWeekdays.filter((day) => day !== weekday)
+        : normalizeWeekdays([...current.recurrenceWeekdays, weekday]),
+    }));
+  };
+
+  const setWeekdayPreset = (weekdays: WeekdayNumber[]) => {
+    setForm((current) => ({ ...current, recurrenceWeekdays: [...weekdays] }));
+  };
+
+  const weekdayAdjustedDueDate =
+    form.dueDate &&
+    form.recurrenceType === "weekdays" &&
+    form.recurrenceWeekdays.length
+      ? getRecurrenceStartDate(form.dueDate, {
+          type: "weekdays",
+          interval: 1,
+          weekdays: form.recurrenceWeekdays,
+        })
+      : form.dueDate;
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const name = form.name.trim();
     if (!name) return;
 
+    if (
+      form.dueDate &&
+      form.recurrenceType === "weekdays" &&
+      form.recurrenceWeekdays.length === 0
+    ) {
+      onMessage("Selecciona al menos un día de la semana para la repetición.");
+      return;
+    }
+
+    if (
+      form.recurrenceEndDate &&
+      weekdayAdjustedDueDate &&
+      form.recurrenceEndDate < weekdayAdjustedDueDate
+    ) {
+      onMessage(
+        "La fecha final de repetición no puede ser anterior a la primera fecha programada.",
+      );
+      return;
+    }
+
     setSaving(true);
     try {
       const timestamp = new Date().toISOString();
-      const dueDate = form.dueDate || undefined;
-      const recurrenceType = dueDate ? form.recurrenceType : "none";
+      const requestedDueDate = form.dueDate || undefined;
+      const recurrenceType = requestedDueDate ? form.recurrenceType : "none";
+      const recurrence = {
+        type: recurrenceType,
+        interval:
+          recurrenceType === "weekdays"
+            ? 1
+            : Math.max(1, Number(form.recurrenceInterval) || 1),
+        weekdays:
+          recurrenceType === "weekdays"
+            ? normalizeWeekdays(form.recurrenceWeekdays)
+            : undefined,
+        endDate:
+          requestedDueDate && recurrenceType !== "none" && form.recurrenceEndDate
+            ? form.recurrenceEndDate
+            : undefined,
+      };
+      const dueDate = requestedDueDate
+        ? getRecurrenceStartDate(requestedDueDate, recurrence)
+        : undefined;
       await onSave({
         id: editing?.id || crypto.randomUUID(),
         name,
@@ -117,14 +214,7 @@ export function TaskTemplatesPanel({
         privateOwnerUserId: form.isPrivate ? currentUser.uid : undefined,
         dueDate,
         dueTime: dueDate && form.dueTime ? form.dueTime : undefined,
-        recurrence: {
-          type: recurrenceType,
-          interval: Math.max(1, Number(form.recurrenceInterval) || 1),
-          endDate:
-            dueDate && recurrenceType !== "none" && form.recurrenceEndDate
-              ? form.recurrenceEndDate
-              : undefined,
-        },
+        recurrence,
         createdAt: editing?.createdAt || timestamp,
         updatedAt: timestamp,
         createdByUserId: editing?.createdByUserId || currentUser.uid,
@@ -171,7 +261,11 @@ export function TaskTemplatesPanel({
                       ? ` · ${template.estimatedMinutes} min`
                       : " · Sin tiempo"}
                     {template.dueDate ? ` · ${template.dueDate}` : " · Sin fecha"}
-                    {template.recurrence.type !== "none" ? " · Recurrente" : ""}
+                    {template.recurrence.type === "weekdays"
+                      ? ` · ${formatWeekdayRecurrence(template.recurrence.weekdays)}`
+                      : template.recurrence.type !== "none"
+                        ? " · Recurrente"
+                        : ""}
                   </span>
                 </div>
                 <div className="row-actions">
@@ -302,6 +396,7 @@ export function TaskTemplatesPanel({
                   if (!value) {
                     update("dueTime", "");
                     update("recurrenceType", "none");
+                    update("recurrenceWeekdays", []);
                     update("recurrenceEndDate", "");
                   }
                 }}
@@ -325,34 +420,93 @@ export function TaskTemplatesPanel({
                 disabled={!form.dueDate}
                 value={form.recurrenceType}
                 onChange={(event) =>
-                  update("recurrenceType", event.target.value as RecurrenceType)
+                  setRecurrenceType(event.target.value as RecurrenceType)
                 }
               >
                 <option value="none">No se repite</option>
                 <option value="daily">Cada X días</option>
                 <option value="weekly">Cada X semanas</option>
+                <option value="weekdays">Días de la semana</option>
                 <option value="monthly">Cada X meses</option>
               </select>
             </label>
 
-            <label className="field">
-              <span>Repetir cada</span>
-              <input
-                min="1"
-                inputMode="numeric"
-                type="number"
-                disabled={!form.dueDate || form.recurrenceType === "none"}
-                value={form.recurrenceInterval}
-                onChange={(event) => update("recurrenceInterval", event.target.value)}
-              />
-            </label>
+            {form.recurrenceType !== "weekdays" && (
+              <label className="field">
+                <span>Repetir cada</span>
+                <input
+                  min="1"
+                  inputMode="numeric"
+                  type="number"
+                  disabled={!form.dueDate || form.recurrenceType === "none"}
+                  value={form.recurrenceInterval}
+                  onChange={(event) => update("recurrenceInterval", event.target.value)}
+                />
+              </label>
+            )}
+
+            {form.dueDate && form.recurrenceType === "weekdays" && (
+              <div className="field field-wide weekday-recurrence-field">
+                <span>Días de la semana</span>
+                <div className="weekday-selector" aria-label="Días de repetición">
+                  {WEEKDAY_OPTIONS.map((weekday) => (
+                    <button
+                      key={weekday.value}
+                      type="button"
+                      className={
+                        form.recurrenceWeekdays.includes(weekday.value)
+                          ? "selected"
+                          : ""
+                      }
+                      aria-pressed={form.recurrenceWeekdays.includes(weekday.value)}
+                      title={weekday.label}
+                      onClick={() => toggleRecurrenceWeekday(weekday.value)}
+                    >
+                      {weekday.shortLabel}
+                    </button>
+                  ))}
+                </div>
+                <div className="weekday-presets">
+                  <button
+                    type="button"
+                    onClick={() => setWeekdayPreset(WEEKDAY_PRESETS.weekdays)}
+                  >
+                    Lunes a viernes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWeekdayPreset(WEEKDAY_PRESETS.weekend)}
+                  >
+                    Fin de semana
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWeekdayPreset(WEEKDAY_PRESETS.everyDay)}
+                  >
+                    Todos los días
+                  </button>
+                </div>
+                {form.recurrenceWeekdays.length === 0 ? (
+                  <small className="weekday-recurrence-warning">
+                    Selecciona al menos un día.
+                  </small>
+                ) : weekdayAdjustedDueDate !== form.dueDate ? (
+                  <small className="weekday-adjustment-note">
+                    La primera fecha se ajustará automáticamente a {new Intl.DateTimeFormat(
+                      "es-DO",
+                      { weekday: "long", day: "numeric", month: "short" },
+                    ).format(new Date(`${weekdayAdjustedDueDate}T12:00:00`))}.
+                  </small>
+                ) : null}
+              </div>
+            )}
 
             <label className="field">
               <span>Repetir hasta</span>
               <input
                 type="date"
                 disabled={!form.dueDate || form.recurrenceType === "none"}
-                min={form.dueDate || undefined}
+                min={weekdayAdjustedDueDate || form.dueDate || undefined}
                 value={form.recurrenceEndDate}
                 onChange={(event) => update("recurrenceEndDate", event.target.value)}
               />

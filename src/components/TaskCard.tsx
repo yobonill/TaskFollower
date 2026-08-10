@@ -3,6 +3,7 @@ import type { Task, TaskAssignee, TaskPriority } from "../models/task";
 import {
   formatDueDate,
   formatDuration,
+  formatWeekdayRecurrence,
   getNextDueDate,
   isTaskOverdue,
   toDateInputValue,
@@ -40,6 +41,7 @@ const formatRecurrence = (task: Task): string => {
   let label = "";
   if (type === "daily") label = amount === 1 ? "Cada día" : `Cada ${amount} días`;
   if (type === "weekly") label = amount === 1 ? "Cada semana" : `Cada ${amount} semanas`;
+  if (type === "weekdays") label = formatWeekdayRecurrence(task.recurrence.weekdays);
   if (type === "monthly") label = amount === 1 ? "Cada mes" : `Cada ${amount} meses`;
   if (label && endDate) {
     const end = new Date(`${endDate}T12:00:00`);
@@ -60,7 +62,11 @@ const isFinalRecurrence = (task: Task): boolean => {
     return false;
   }
   return (
-    getNextDueDate(task.dueDate, task.recurrence) > task.recurrence.endDate
+    getNextDueDate(
+      task.dueDate,
+      task.recurrence,
+      task.recurrence.type === "weekdays" ? new Date().toISOString() : undefined,
+    ) > task.recurrence.endDate
   );
 };
 

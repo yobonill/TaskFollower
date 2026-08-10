@@ -2646,3 +2646,80 @@ h2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Weekday recurrence */
+.weekday-recurrence-field {
+  padding: 0.7rem;
+  border: 1px solid #dce5ef;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.weekday-selector {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.weekday-selector button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0.45rem 0.25rem;
+  border: 1px solid #d5dfea;
+  border-radius: 9px;
+  color: #536177;
+  background: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.weekday-selector button.selected {
+  border-color: #7ea8f5;
+  color: #245dcc;
+  background: #eaf1ff;
+  box-shadow: inset 0 0 0 1px rgba(47, 111, 237, 0.08);
+}
+
+.weekday-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.weekday-presets button {
+  padding: 0.38rem 0.55rem;
+  border: 1px solid #d8e1ec;
+  border-radius: 999px;
+  color: #536177;
+  background: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.weekday-adjustment-note,
+.weekday-recurrence-warning {
+  display: block;
+  margin-top: 0.5rem;
+  line-height: 1.35;
+}
+
+.weekday-adjustment-note {
+  color: #43648f;
+}
+
+.weekday-recurrence-warning {
+  color: #a85d17;
+  font-weight: 800;
+}
+
+@media (max-width: 520px) {
+  .weekday-selector {
+    gap: 0.25rem;
+  }
+
+  .weekday-selector button {
+    min-height: 40px;
+    padding-inline: 0.15rem;
+  }
+}

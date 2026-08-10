@@ -5,7 +5,8 @@ export type UserFilter = "all" | UserName;
 
 export type TaskPriority = "low" | "normal" | "high" | "critical";
 export type TaskStatus = "pending" | "done" | "cancelled";
-export type RecurrenceType = "none" | "daily" | "weekly" | "monthly";
+export type RecurrenceType = "none" | "daily" | "weekly" | "weekdays" | "monthly";
+export type WeekdayNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type TaskSource =
   | "manual"
   | "import"
@@ -16,6 +17,8 @@ export type TaskSource =
 export interface TaskRecurrence {
   type: RecurrenceType;
   interval: number;
+  /** Days used by the weekday recurrence mode. 1 = Monday, 7 = Sunday. */
+  weekdays?: WeekdayNumber[];
   /** Last due date that may be generated for the recurring series. */
   endDate?: string;
 }
