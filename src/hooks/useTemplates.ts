@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { get, onValue, ref, remove, set, type Unsubscribe } from "firebase/database";
 import type { AppUserDefinition } from "../config/appUsers";
 import { isFirebaseConfigured } from "../config/firebaseConfig";
@@ -6,11 +6,15 @@ import type { TaskTemplate } from "../models/template";
 import type { RecurrenceType, TaskAssignee, TaskPriority, UserName } from "../models/task";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
 
-const CACHE_KEY = "taskFollower.templates.v2";
-const LEGACY_CACHE_KEY = "taskFollower.templates.v1";
-const PENDING_KEY = "taskFollower.templates.pending.v2";
-const LEGACY_PENDING_KEY = "taskFollower.templates.pending.v1";
+const CACHE_PREFIX = "taskFollower.templates.v3";
+const LEGACY_CACHE_KEY = "taskFollower.templates.v2";
+const OLDER_LEGACY_CACHE_KEY = "taskFollower.templates.v1";
+const PENDING_KEY = "taskFollower.templates.pending.v3";
+const LEGACY_PENDING_KEY = "taskFollower.templates.pending.v2";
+const OLDER_LEGACY_PENDING_KEY = "taskFollower.templates.pending.v1";
 const INITIALIZED_KEY = "taskFollower.templates.defaultsInitialized.v1";
+
+const cacheKey = (userId: string): string => `${CACHE_PREFIX}.${userId}`;
 
 type PendingOperation =
   | {
@@ -42,7 +46,8 @@ const isRecurrenceType = (value: unknown): value is RecurrenceType =>
 
 const normalizeTemplate = (
   value: LegacyTemplate,
-  defaultAssignee: UserName,
+  currentUser: AppUserDefinition,
+  takePrivateOwnership = false,
 ): TaskTemplate => {
   const dueDate =
     typeof value.dueDate === "string" && value.dueDate.trim()
@@ -54,6 +59,13 @@ const normalizeTemplate = (
       : "none";
   const estimatedMinutes = Number(value.estimatedMinutes);
   const createdAt = value.createdAt || new Date().toISOString();
+  const isPrivate = value.isPrivate === true;
+  const privateOwnerUserId = isPrivate
+    ? takePrivateOwnership
+      ? currentUser.uid
+      : value.privateOwnerUserId || value.createdByUserId || currentUser.uid
+    : undefined;
+  const ownsPrivateTemplate = !isPrivate || privateOwnerUserId === currentUser.uid;
 
   return {
     id: value.id,
@@ -64,7 +76,14 @@ const normalizeTemplate = (
         ? Math.max(1, estimatedMinutes)
         : undefined,
     priority: value.priority,
-    assignedTo: isAssignee(value.assignedTo) ? value.assignedTo : defaultAssignee,
+    assignedTo:
+      isPrivate && ownsPrivateTemplate
+        ? currentUser.name
+        : isAssignee(value.assignedTo)
+          ? value.assignedTo
+          : currentUser.name,
+    isPrivate,
+    privateOwnerUserId,
     dueDate,
     dueTime: dueDate && value.dueTime ? value.dueTime : undefined,
     recurrence: {
@@ -80,7 +99,7 @@ const normalizeTemplate = (
     },
     createdAt,
     updatedAt: value.updatedAt || createdAt,
-    createdByUserId: value.createdByUserId || "migration",
+    createdByUserId: value.createdByUserId || currentUser.uid,
   };
 };
 
@@ -98,6 +117,7 @@ const defaultTemplates = (user: AppUserDefinition): TaskTemplate[] => {
     estimatedMinutes,
     priority,
     assignedTo: user.name,
+    isPrivate: false,
     recurrence: { type: "none", interval: 1 },
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -122,36 +142,54 @@ const readRawArray = <T,>(key: string): T[] => {
   }
 };
 
-const readCachedTemplates = (defaultAssignee: UserName): TaskTemplate[] => {
-  const current = readRawArray<LegacyTemplate>(CACHE_KEY);
-  const legacy = current.length
-    ? current
-    : readRawArray<LegacyTemplate>(LEGACY_CACHE_KEY);
+const readCachedTemplates = (currentUser: AppUserDefinition): TaskTemplate[] => {
+  const userCache = readRawArray<LegacyTemplate>(cacheKey(currentUser.uid));
+  const legacy = userCache.length
+    ? userCache
+    : readRawArray<LegacyTemplate>(LEGACY_CACHE_KEY).length
+      ? readRawArray<LegacyTemplate>(LEGACY_CACHE_KEY)
+      : readRawArray<LegacyTemplate>(OLDER_LEGACY_CACHE_KEY);
+
   return legacy
     .filter((item) => Boolean(item?.id && item?.name))
-    .map((item) => normalizeTemplate(item, defaultAssignee));
+    .map((item) => normalizeTemplate(item, currentUser))
+    .filter(
+      (template) =>
+        !template.isPrivate || template.privateOwnerUserId === currentUser.uid,
+    );
 };
 
-const readPending = (defaultAssignee: UserName): PendingOperation[] => {
+const readPending = (currentUser: AppUserDefinition): PendingOperation[] => {
   const current = readRawArray<PendingOperation>(PENDING_KEY);
   const raw = current.length
     ? current
-    : readRawArray<PendingOperation>(LEGACY_PENDING_KEY);
+    : readRawArray<PendingOperation>(LEGACY_PENDING_KEY).length
+      ? readRawArray<PendingOperation>(LEGACY_PENDING_KEY)
+      : readRawArray<PendingOperation>(OLDER_LEGACY_PENDING_KEY);
+
   return raw.map((operation) =>
     operation.type === "upsert"
       ? {
           ...operation,
           template: normalizeTemplate(
             operation.template as LegacyTemplate,
-            defaultAssignee,
+            currentUser,
+            operation.template.isPrivate === true,
           ),
         }
       : operation,
   );
 };
 
-const storeTemplates = (templates: TaskTemplate[]): void => {
-  localStorage.setItem(CACHE_KEY, JSON.stringify(templates));
+const storeTemplates = (
+  templates: TaskTemplate[],
+  currentUser: AppUserDefinition,
+): void => {
+  const visible = templates.filter(
+    (template) =>
+      !template.isPrivate || template.privateOwnerUserId === currentUser.uid,
+  );
+  localStorage.setItem(cacheKey(currentUser.uid), JSON.stringify(visible));
 };
 
 const storePending = (operations: PendingOperation[]): void => {
@@ -162,24 +200,49 @@ const stripUndefined = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as
 
 const recordToTemplates = (
   value: unknown,
-  defaultAssignee: UserName,
+  currentUser: AppUserDefinition,
+  privateTemplates = false,
 ): TaskTemplate[] => {
   if (!value || typeof value !== "object") return [];
   return Object.values(value as Record<string, LegacyTemplate>)
     .filter((item): item is LegacyTemplate => Boolean(item?.id && item?.name))
-    .map((item) => normalizeTemplate(item, defaultAssignee));
+    .map((item) =>
+      normalizeTemplate(
+        {
+          ...item,
+          isPrivate: privateTemplates ? true : item.isPrivate,
+          privateOwnerUserId: privateTemplates ? currentUser.uid : item.privateOwnerUserId,
+        },
+        currentUser,
+      ),
+    )
+    .filter(
+      (template) =>
+        !template.isPrivate || template.privateOwnerUserId === currentUser.uid,
+    );
 };
 
 const mergePending = (
   remote: TaskTemplate[],
   operations: PendingOperation[],
+  currentUser: AppUserDefinition,
 ): TaskTemplate[] => {
   const map = new Map(remote.map((template) => [template.id, template]));
   for (const operation of operations) {
-    if (operation.type === "upsert") map.set(operation.template.id, operation.template);
-    else map.delete(operation.templateId);
+    if (operation.actorUserId !== currentUser.uid) continue;
+    if (operation.type === "upsert") {
+      map.set(
+        operation.template.id,
+        normalizeTemplate(operation.template, currentUser, operation.template.isPrivate === true),
+      );
+    } else {
+      map.delete(operation.templateId);
+    }
   }
-  return [...map.values()];
+  return [...map.values()].filter(
+    (template) =>
+      !template.isPrivate || template.privateOwnerUserId === currentUser.uid,
+  );
 };
 
 export interface UseTemplatesResult {
@@ -194,35 +257,44 @@ export const useTemplates = (
   currentUser: AppUserDefinition,
 ): UseTemplatesResult => {
   const [templates, setTemplates] = useState<TaskTemplate[]>(() =>
-    readCachedTemplates(currentUser.name),
+    readCachedTemplates(currentUser),
   );
   const [pendingCount, setPendingCount] = useState(
-    () => readPending(currentUser.name).length,
+    () => readPending(currentUser).length,
   );
   const [firebaseConnected, setFirebaseConnected] = useState(false);
+  const publicRemoteRef = useRef<TaskTemplate[]>([]);
+  const privateRemoteRef = useRef<TaskTemplate[]>([]);
 
-  const updateLocal = useCallback((next: TaskTemplate[]) => {
-    const sorted = [...next].sort((a, b) => a.name.localeCompare(b.name, "es"));
-    setTemplates(sorted);
-    storeTemplates(sorted);
-  }, []);
+  const updateLocal = useCallback(
+    (next: TaskTemplate[]) => {
+      const visible = next.filter(
+        (template) =>
+          !template.isPrivate || template.privateOwnerUserId === currentUser.uid,
+      );
+      const sorted = [...visible].sort((a, b) => a.name.localeCompare(b.name, "es"));
+      setTemplates(sorted);
+      storeTemplates(sorted, currentUser);
+    },
+    [currentUser],
+  );
 
   const queueOperation = useCallback((operation: PendingOperation) => {
     const next = [
-      ...readPending(currentUser.name).filter((item) => item.id !== operation.id),
+      ...readPending(currentUser).filter((item) => item.id !== operation.id),
       operation,
     ];
     storePending(next);
     setPendingCount(next.length);
-  }, [currentUser.name]);
+  }, [currentUser]);
 
   const removePending = useCallback((operationId: string) => {
-    const next = readPending(currentUser.name).filter(
+    const next = readPending(currentUser).filter(
       (item) => item.id !== operationId,
     );
     storePending(next);
     setPendingCount(next.length);
-  }, [currentUser.name]);
+  }, [currentUser]);
 
   const execute = useCallback(
     async (operation: PendingOperation): Promise<boolean> => {
@@ -238,21 +310,48 @@ export const useTemplates = (
       try {
         const { auth, database } = getAuthenticatedFirebaseServices();
         if (auth.currentUser?.uid !== currentUser.uid) return false;
+
         if (operation.type === "upsert") {
-          await set(
-            ref(database, `taskTemplates/items/${operation.template.id}`),
-            stripUndefined(operation.template),
+          const template = normalizeTemplate(
+            operation.template,
+            currentUser,
+            operation.template.isPrivate === true,
           );
+
+          if (template.isPrivate) {
+            await set(
+              ref(database, `privateTaskTemplates/${currentUser.uid}/items/${template.id}`),
+              stripUndefined(template),
+            );
+            await remove(ref(database, `taskTemplates/items/${template.id}`));
+          } else {
+            await set(
+              ref(database, `taskTemplates/items/${template.id}`),
+              stripUndefined(template),
+            );
+            await remove(
+              ref(database, `privateTaskTemplates/${currentUser.uid}/items/${template.id}`),
+            );
+          }
         } else {
-          await remove(ref(database, `taskTemplates/items/${operation.templateId}`));
+          await Promise.all([
+            remove(ref(database, `taskTemplates/items/${operation.templateId}`)),
+            remove(
+              ref(
+                database,
+                `privateTaskTemplates/${currentUser.uid}/items/${operation.templateId}`,
+              ),
+            ),
+          ]);
         }
+
         removePending(operation.id);
         return true;
       } catch {
         return false;
       }
     },
-    [currentUser.uid, firebaseConnected, removePending],
+    [currentUser, firebaseConnected, removePending],
   );
 
   const submit = useCallback(
@@ -267,19 +366,23 @@ export const useTemplates = (
 
   const retrySync = useCallback(async () => {
     if (!navigator.onLine || !firebaseConnected) return;
-    const eligible = readPending(currentUser.name).filter(
+    const eligible = readPending(currentUser).filter(
       (operation) => operation.actorUserId === currentUser.uid,
     );
     for (const operation of eligible) {
       const succeeded = await execute(operation);
       if (!succeeded) break;
     }
-  }, [currentUser.name, currentUser.uid, execute, firebaseConnected]);
+  }, [currentUser, execute, firebaseConnected]);
 
   const saveTemplate = useCallback(
     async (template: TaskTemplate) => {
-      const normalized = normalizeTemplate(template, currentUser.name);
-      const current = readCachedTemplates(currentUser.name);
+      const normalized = normalizeTemplate(
+        template,
+        currentUser,
+        template.isPrivate === true,
+      );
+      const current = readCachedTemplates(currentUser);
       const next = current.some((item) => item.id === normalized.id)
         ? current.map((item) => (item.id === normalized.id ? normalized : item))
         : [...current, normalized];
@@ -291,13 +394,13 @@ export const useTemplates = (
         template: normalized,
       });
     },
-    [currentUser.name, currentUser.uid, submit, updateLocal],
+    [currentUser, submit, updateLocal],
   );
 
   const deleteTemplate = useCallback(
     async (templateId: string) => {
       updateLocal(
-        readCachedTemplates(currentUser.name).filter(
+        readCachedTemplates(currentUser).filter(
           (item) => item.id !== templateId,
         ),
       );
@@ -308,13 +411,17 @@ export const useTemplates = (
         templateId,
       });
     },
-    [currentUser.name, currentUser.uid, submit, updateLocal],
+    [currentUser, submit, updateLocal],
   );
 
   useEffect(() => {
+    publicRemoteRef.current = [];
+    privateRemoteRef.current = [];
+    updateLocal(readCachedTemplates(currentUser));
+
     if (!isFirebaseConfigured()) {
       if (
-        !readCachedTemplates(currentUser.name).length &&
+        !readCachedTemplates(currentUser).length &&
         !localStorage.getItem(INITIALIZED_KEY)
       ) {
         const defaults = defaultTemplates(currentUser);
@@ -324,9 +431,24 @@ export const useTemplates = (
       return () => undefined;
     }
 
-    let unsubscribeTemplates: Unsubscribe | undefined;
+    let unsubscribePublic: Unsubscribe | undefined;
+    let unsubscribePrivate: Unsubscribe | undefined;
     let unsubscribeConnection: Unsubscribe | undefined;
     let disposed = false;
+
+    const refreshFromRemote = () => {
+      if (disposed) return;
+      const pending = readPending(currentUser).filter(
+        (operation) => operation.actorUserId === currentUser.uid,
+      );
+      updateLocal(
+        mergePending(
+          [...publicRemoteRef.current, ...privateRemoteRef.current],
+          pending,
+          currentUser,
+        ),
+      );
+    };
 
     const connect = async () => {
       try {
@@ -341,16 +463,29 @@ export const useTemplates = (
           },
         );
 
-        unsubscribeTemplates = onValue(
+        unsubscribePublic = onValue(
           ref(database, "taskTemplates/items"),
           (snapshot) => {
             if (disposed) return;
-            updateLocal(
-              mergePending(
-                recordToTemplates(snapshot.val(), currentUser.name),
-                readPending(currentUser.name),
-              ),
+            publicRemoteRef.current = recordToTemplates(
+              snapshot.val(),
+              currentUser,
+              false,
             );
+            refreshFromRemote();
+          },
+        );
+
+        unsubscribePrivate = onValue(
+          ref(database, `privateTaskTemplates/${currentUser.uid}/items`),
+          (snapshot) => {
+            if (disposed) return;
+            privateRemoteRef.current = recordToTemplates(
+              snapshot.val(),
+              currentUser,
+              true,
+            );
+            refreshFromRemote();
           },
         );
 
@@ -376,7 +511,8 @@ export const useTemplates = (
     void connect();
     return () => {
       disposed = true;
-      unsubscribeTemplates?.();
+      unsubscribePublic?.();
+      unsubscribePrivate?.();
       unsubscribeConnection?.();
     };
   }, [currentUser, updateLocal]);

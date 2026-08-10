@@ -260,6 +260,9 @@ const getTaskResolution = (
     (item) => item.taskId === taskId && item.outcome === "rewarded",
   ) || getLegacyTaskOutcome(taskId, readCachedTransactions());
 
+const getTaskPapipointsLabel = (task: Task): string =>
+  task.isPrivate ? "Tarea privada" : task.name;
+
 const hasTaskOverduePenalty = (taskId: string): boolean =>
   readCachedTransactions().some(
     (item) => item.taskId === taskId && item.type === "task_overdue",
@@ -747,7 +750,7 @@ export const usePapipoints = (
               task.assignedTo === "Ambos"
                 ? "Tarea compartida vencida"
                 : "Tarea vencida"
-            }: ${task.name} (día ${dayIndex + 1} de ${overdueDays.length} de atraso · ${dailyPenalty} Papipuntos por día)`,
+            }: ${getTaskPapipointsLabel(task)} (día ${dayIndex + 1} de ${overdueDays.length} de atraso · ${dailyPenalty} Papipuntos por día)`,
             taskId: task.id,
             createdAt: resolvedAt,
             createdByUserId: currentUser.uid,
@@ -838,7 +841,7 @@ export const usePapipoints = (
             task.assignedTo === "Ambos"
               ? "Tarea compartida completada"
               : "Tarea completada"
-          }: ${task.name} (${detailParts.join(" + ")})`,
+          }: ${getTaskPapipointsLabel(task)} (${detailParts.join(" + ")})`,
           taskId: task.id,
           createdAt: completedAt,
           createdByUserId: currentUser.uid,
@@ -854,8 +857,8 @@ export const usePapipoints = (
           resolvedAt: completedAt,
           resolvedByUserId: currentUser.uid,
           description: early
-            ? `Tarea completada antes de tiempo: ${task.name}`
-            : `Tarea completada: ${task.name}`,
+            ? `Tarea completada antes de tiempo: ${getTaskPapipointsLabel(task)}`
+            : `Tarea completada: ${getTaskPapipointsLabel(task)}`,
         },
         outcomeTransactions,
       );

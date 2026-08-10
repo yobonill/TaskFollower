@@ -41,6 +41,7 @@ interface FormState {
   dueTime: string;
   priority: TaskPriority | "";
   assignedTo: TaskAssignee;
+  isPrivate: boolean;
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
   recurrenceEndDate: string;
@@ -51,8 +52,9 @@ interface SavedDefaults {
   assignedTo?: TaskAssignee;
 }
 
-export const TASK_FORM_DRAFT_KEY = "taskFollower.taskDraft.v3";
-const DRAFT_KEY = TASK_FORM_DRAFT_KEY;
+export const TASK_FORM_DRAFT_KEY = "taskFollower.taskDraft.v4";
+export const getTaskFormDraftKey = (userId: string): string =>
+  `${TASK_FORM_DRAFT_KEY}.${userId}`;
 const DEFAULTS_KEY = "taskFollower.taskFormDefaults.v2";
 
 const addDays = (date: Date, amount: number): Date => {
@@ -104,6 +106,7 @@ const createInitialState = (defaultUser: UserName): FormState => {
       defaults.assignedTo === "Ambos"
         ? defaults.assignedTo
         : defaultUser,
+    isPrivate: false,
     recurrenceType: "none",
     recurrenceInterval: "1",
     recurrenceEndDate: "",
@@ -117,10 +120,13 @@ const hasMeaningfulDraft = (form: FormState, defaultUser: UserName): boolean => 
   );
 };
 
-const readDraft = (defaultUser: UserName): FormState | null => {
+const readDraft = (
+  defaultUser: UserName,
+  userId: string,
+): FormState | null => {
   try {
     const parsed = JSON.parse(
-      localStorage.getItem(DRAFT_KEY) || "null",
+      localStorage.getItem(getTaskFormDraftKey(userId)) || "null",
     ) as Partial<FormState> | null;
     if (!parsed) return null;
     const fallback = createInitialState(defaultUser);
@@ -135,11 +141,14 @@ const readDraft = (defaultUser: UserName): FormState | null => {
           ? parsed.priority
           : "",
       assignedTo:
-        parsed.assignedTo === "Yisel" ||
-        parsed.assignedTo === "Yorki" ||
-        parsed.assignedTo === "Ambos"
-          ? parsed.assignedTo
-          : defaultUser,
+        parsed.isPrivate === true
+          ? defaultUser
+          : parsed.assignedTo === "Yisel" ||
+              parsed.assignedTo === "Yorki" ||
+              parsed.assignedTo === "Ambos"
+            ? parsed.assignedTo
+            : defaultUser,
+      isPrivate: parsed.isPrivate === true,
     };
   } catch {
     return null;
@@ -157,11 +166,12 @@ export function TaskForm({
   onCancel,
 }: TaskFormProps) {
   const defaultUser = currentUser.name;
+  const draftKey = getTaskFormDraftKey(currentUser.uid);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<FormState>(() =>
     editingTask
       ? createInitialState(defaultUser)
-      : readDraft(defaultUser) || createInitialState(defaultUser),
+      : readDraft(defaultUser, currentUser.uid) || createInitialState(defaultUser),
   );
   const [showAdvanced, setShowAdvanced] = useState(Boolean(editingTask));
   const [showCustomDate, setShowCustomDate] = useState(false);
@@ -171,7 +181,7 @@ export function TaskForm({
   const [similarPrompt, setSimilarPrompt] = useState<{ task: Task; similarTasks: Task[]; createAnother: boolean } | null>(null);
   const [draftRecovered, setDraftRecovered] = useState(() => {
     if (editingTask) return false;
-    const draft = readDraft(defaultUser);
+    const draft = readDraft(defaultUser, currentUser.uid);
     return Boolean(draft && hasMeaningfulDraft(draft, defaultUser));
   });
 
@@ -188,13 +198,13 @@ export function TaskForm({
 
   useEffect(() => {
     if (!editingTask) {
-      const draft = readDraft(defaultUser);
+      const draft = readDraft(defaultUser, currentUser.uid);
       const meaningfulDraft = Boolean(
         draft && hasMeaningfulDraft(draft, defaultUser),
       );
       setForm(meaningfulDraft && draft ? draft : createInitialState(defaultUser));
       setDraftRecovered(meaningfulDraft);
-      if (!meaningfulDraft) localStorage.removeItem(DRAFT_KEY);
+      if (!meaningfulDraft) localStorage.removeItem(draftKey);
       setShowAdvanced(false);
       return;
     }
@@ -208,24 +218,25 @@ export function TaskForm({
       dueDate: editingTask.dueDate || "",
       dueTime: editingTask.dueTime || "",
       priority: editingTask.priority || "",
-      assignedTo: editingTask.assignedTo,
+      assignedTo: editingTask.isPrivate ? currentUser.name : editingTask.assignedTo,
+      isPrivate: editingTask.isPrivate === true,
       recurrenceType: editingTask.recurrence.type,
       recurrenceInterval: String(editingTask.recurrence.interval),
       recurrenceEndDate: editingTask.recurrence.endDate || "",
     });
-  }, [defaultUser, editingTask]);
+  }, [currentUser.uid, defaultUser, draftKey, editingTask]);
 
   useEffect(() => {
     if (editingTask) return;
     const timeout = window.setTimeout(() => {
       if (hasMeaningfulDraft(form, defaultUser)) {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+        localStorage.setItem(draftKey, JSON.stringify(form));
       } else {
-        localStorage.removeItem(DRAFT_KEY);
+        localStorage.removeItem(draftKey);
       }
     }, 180);
     return () => window.clearTimeout(timeout);
-  }, [defaultUser, editingTask, form]);
+  }, [defaultUser, draftKey, editingTask, form]);
 
   useEffect(() => {
     setCustomDuration(!presetDurationValues.includes(form.estimatedMinutes));
@@ -252,7 +263,8 @@ export function TaskForm({
       dueDate,
       dueTime: dueDate ? template.dueTime || "" : "",
       priority: template.priority || "",
-      assignedTo: template.assignedTo,
+      assignedTo: template.isPrivate ? currentUser.name : template.assignedTo,
+      isPrivate: template.isPrivate === true,
       recurrenceType,
       recurrenceInterval: String(Math.max(1, template.recurrence.interval || 1)),
       recurrenceEndDate:
@@ -272,6 +284,8 @@ export function TaskForm({
 
   const buildTask = (): Task => {
     const timestamp = new Date().toISOString();
+    const isPrivate = form.isPrivate;
+    const assignedTo: TaskAssignee = isPrivate ? currentUser.name : form.assignedTo;
     return {
       id: editingTask?.id || crypto.randomUUID(),
       name: form.name.trim(),
@@ -284,13 +298,15 @@ export function TaskForm({
       dueTime: form.dueDate && form.dueTime ? form.dueTime : undefined,
       priority: form.priority || undefined,
       assignedBy: editingTask?.assignedBy || currentUser.name,
-      assignedTo: form.assignedTo,
+      assignedTo,
       createdByUserId: editingTask?.createdByUserId || currentUser.uid,
       assignedToUserId:
-        form.assignedTo === "Ambos"
+        assignedTo === "Ambos"
           ? undefined
-          : getAppUserByName(form.assignedTo).uid,
-      assignedToUserIds: getAssigneeUserIds(form.assignedTo),
+          : getAppUserByName(assignedTo).uid,
+      assignedToUserIds: getAssigneeUserIds(assignedTo),
+      isPrivate,
+      privateOwnerUserId: isPrivate ? currentUser.uid : undefined,
       lastModifiedByUserId: currentUser.uid,
       status: editingTask?.status || "pending",
       recurrence: {
@@ -318,7 +334,7 @@ export function TaskForm({
   };
 
   const finishSuccessfulSave = (createAnother: boolean) => {
-    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(draftKey);
     localStorage.setItem(
       DEFAULTS_KEY,
       JSON.stringify({
@@ -335,12 +351,14 @@ export function TaskForm({
         dueDate: "",
         dueTime: "",
         priority: "",
+        assignedTo: defaultUser,
+        isPrivate: false,
         recurrenceType: "none",
         recurrenceInterval: "1",
         recurrenceEndDate: "",
       };
       setForm(nextState);
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(nextState));
+      localStorage.setItem(draftKey, JSON.stringify(nextState));
       setDraftRecovered(false);
       setFormMessage("Tarea guardada. Puedes registrar otra.");
       window.setTimeout(() => nameInputRef.current?.focus(), 0);
@@ -362,7 +380,7 @@ export function TaskForm({
     if (!editingTask && !skipSimilarityCheck && task.name.trim()) {
       const similarTasks = findSimilarTasks(task);
       if (similarTasks.length) {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+        localStorage.setItem(draftKey, JSON.stringify(form));
         setSimilarPrompt({ task, similarTasks, createAnother });
         return;
       }
@@ -376,7 +394,7 @@ export function TaskForm({
   };
 
   const clearDraft = () => {
-    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(draftKey);
     setForm(createInitialState(defaultUser));
     setDraftRecovered(false);
     setFormMessage("Borrador descartado.");
@@ -438,19 +456,53 @@ export function TaskForm({
       </label>
 
       <fieldset className="quick-group">
-        <legend>Asignada a</legend>
-        <div className="segmented-options three-options">
-          {[...USERS, "Ambos" as const].map((user) => (
-            <button
-              key={user}
-              type="button"
-              className={form.assignedTo === user ? "selected" : ""}
-              onClick={() => update("assignedTo", user)}
-            >
-              {user === "Ambos" ? "👥 Ambos" : user}
-            </button>
-          ))}
+        <legend>Visibilidad</legend>
+        <div className="segmented-options two-options">
+          <button
+            type="button"
+            className={!form.isPrivate ? "selected" : ""}
+            onClick={() => update("isPrivate", false)}
+          >
+            Normal
+          </button>
+          <button
+            type="button"
+            className={form.isPrivate ? "selected" : ""}
+            onClick={() => {
+              update("isPrivate", true);
+              update("assignedTo", currentUser.name);
+            }}
+          >
+            🔒 Privada
+          </button>
         </div>
+        {form.isPrivate && (
+          <small className="privacy-note">
+            Solo {currentUser.name} podrá ver esta tarea. Las tareas privadas no pueden asignarse a Ambos ni al otro usuario.
+          </small>
+        )}
+      </fieldset>
+
+      <fieldset className="quick-group">
+        <legend>Asignada a</legend>
+        {form.isPrivate ? (
+          <div className="private-assignee-summary">
+            🔒 Solo {currentUser.name}
+          </div>
+        ) : (
+          <div className="segmented-options three-options">
+            {[...USERS, "Ambos" as const].map((user) => (
+              <button
+                key={user}
+                type="button"
+                className={form.assignedTo === user ? "selected" : ""}
+                onClick={() => update("assignedTo", user)}
+              >
+                {user === "Ambos" ? "👥 Ambos" : user}
+              </button>
+            ))}
+          </div>
+        )}
       </fieldset>
 
       <p className="task-creator-note">
@@ -717,7 +769,7 @@ export function TaskForm({
                 type="button"
                 className="button button-secondary"
                 onClick={() => {
-                  localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+                  localStorage.setItem(draftKey, JSON.stringify(form));
                   const prompt = similarPrompt;
                   setSimilarPrompt(null);
                   onReviewSimilar(prompt.task, prompt.similarTasks);

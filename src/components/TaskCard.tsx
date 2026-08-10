@@ -108,9 +108,11 @@ export function TaskCard({
         <div className="task-card-topline">
           {featured && <span className="next-label">Siguiente</span>}
           <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
-          {task.assignedTo === "Ambos" && (
+          {task.isPrivate ? (
+            <span className="private-task-label">🔒 Privada</span>
+          ) : task.assignedTo === "Ambos" ? (
             <span className="shared-task-label">👥 Compartida</span>
-          )}
+          ) : null}
           {overdue && <span className="overdue-label">Vencida</span>}
           {task.recurrence.type !== "none" && (
             <span className="recurrence-label">↻ {formatRecurrence(task)}</span>
@@ -144,43 +146,45 @@ export function TaskCard({
                   <button type="button" onClick={() => runAndClose(() => onDuplicate(task))}>
                     Duplicar
                   </button>
-                  {task.assignedTo === "Ambos" ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => runAndClose(() => onReassign(task, "Yorki"))}
-                      >
-                        Asignar solo a Yorki
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => runAndClose(() => onReassign(task, "Yisel"))}
-                      >
-                        Asignar solo a Yisel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAndClose(() =>
-                            onReassign(
-                              task,
-                              task.assignedTo === "Yorki" ? "Yisel" : "Yorki",
-                            ),
-                          )
-                        }
-                      >
-                        Asignar a {task.assignedTo === "Yorki" ? "Yisel" : "Yorki"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => runAndClose(() => onReassign(task, "Ambos"))}
-                      >
-                        Convertir en tarea compartida
-                      </button>
-                    </>
+                  {!task.isPrivate && (
+                    task.assignedTo === "Ambos" ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => runAndClose(() => onReassign(task, "Yorki"))}
+                        >
+                          Asignar solo a Yorki
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => runAndClose(() => onReassign(task, "Yisel"))}
+                        >
+                          Asignar solo a Yisel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runAndClose(() =>
+                              onReassign(
+                                task,
+                                task.assignedTo === "Yorki" ? "Yisel" : "Yorki",
+                              ),
+                            )
+                          }
+                        >
+                          Asignar a {task.assignedTo === "Yorki" ? "Yisel" : "Yorki"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => runAndClose(() => onReassign(task, "Ambos"))}
+                        >
+                          Convertir en tarea compartida
+                        </button>
+                      </>
+                    )
                   )}
                   <button type="button" onClick={() => setShowPostpone(true)}>
                     Posponer…

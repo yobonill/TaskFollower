@@ -2603,3 +2603,46 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Private tasks */
+.two-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.private-task-label {
+  display: inline-flex;
+  min-height: 21px;
+  align-items: center;
+  padding: 0.14rem 0.42rem;
+  border-radius: 999px;
+  color: #4a5363;
+  background: #e9edf3;
+  font-size: 0.696rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.privacy-note {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.private-assignee-summary {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #dce4ee;
+  border-radius: 10px;
+  color: #4a5363;
+  background: #f4f6f9;
+  font-weight: 850;
+}
+
+@media (max-width: 420px) {
+  .two-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

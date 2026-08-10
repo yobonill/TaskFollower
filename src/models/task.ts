@@ -37,6 +37,9 @@ export interface Task {
   assignedToUserId?: string;
   /** Canonical assignee UID list. Shared tasks contain both users. */
   assignedToUserIds?: string[];
+  /** Private tasks are stored separately and are visible only to their owner. */
+  isPrivate?: boolean;
+  privateOwnerUserId?: string;
   lastModifiedByUserId?: string;
   status: TaskStatus;
   recurrence: TaskRecurrence;
@@ -53,7 +56,7 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 4;
+  schemaVersion: 5;
   exportedAt: string;
   tasks: Task[];
 }

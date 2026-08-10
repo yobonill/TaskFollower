@@ -3,7 +3,6 @@ import {
   get,
   onValue,
   ref,
-  remove,
   set,
   update,
   type Unsubscribe,
@@ -27,8 +26,11 @@ import { getAuthenticatedFirebaseServices } from "../services/firebase";
 import { getNextDueDate } from "../utils/taskDates";
 import { getAssigneeUserIds } from "../utils/taskAssignment";
 
-const CACHE_KEY = "taskFollower.tasks.v1";
+const CACHE_PREFIX = "taskFollower.tasks.v2";
+const LEGACY_CACHE_KEY = "taskFollower.tasks.v1";
 const PENDING_KEY = "taskFollower.pendingOperations.v1";
+
+const cacheKey = (userId: string): string => `${CACHE_PREFIX}.${userId}`;
 
 type PendingOperation =
   | { id: string; actorUserId?: string; type: "upsert"; task: Task }
@@ -67,8 +69,20 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
     "Yorki";
 
+  const requestedPrivate = task.isPrivate === true;
+  const privateOwnerUserId = requestedPrivate
+    ? task.privateOwnerUserId ||
+      task.createdByUserId ||
+      getAppUserByName(assignedBy).uid
+    : undefined;
+  const privateOwner = privateOwnerUserId
+    ? getAppUserByUid(privateOwnerUserId)
+    : undefined;
+
   let assignedTo: TaskAssignee;
-  if (
+  if (requestedPrivate && privateOwner) {
+    assignedTo = privateOwner.name;
+  } else if (
     task.assignedTo === "Ambos" ||
     new Set(uidAssignees.map((user) => user.name)).size > 1
   ) {
@@ -109,6 +123,8 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     assignedToUserId:
       assignedTo === "Ambos" ? undefined : assignedToUserIds[0],
     assignedToUserIds,
+    isPrivate: requestedPrivate,
+    privateOwnerUserId: requestedPrivate ? privateOwnerUserId : undefined,
     lastModifiedByUserId:
       task.lastModifiedByUserId ||
       task.createdByUserId ||
@@ -153,18 +169,66 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
   };
 };
 
-const readCachedTasks = (): Task[] => {
+const normalizeTaskForUser = (
+  taskValue: Task | LegacyTask,
+  currentUser: AppUserDefinition,
+  takePrivateOwnership = false,
+): Task => {
+  const normalized = normalizeTask(taskValue);
+  if (!normalized.isPrivate) {
+    return {
+      ...normalized,
+      isPrivate: false,
+      privateOwnerUserId: undefined,
+    };
+  }
+
+  const ownerUserId = takePrivateOwnership
+    ? currentUser.uid
+    : normalized.privateOwnerUserId || normalized.createdByUserId || currentUser.uid;
+  const owner = getAppUserByUid(ownerUserId) || currentUser;
+
+  return {
+    ...normalized,
+    isPrivate: true,
+    privateOwnerUserId: owner.uid,
+    assignedTo: owner.name,
+    assignedToUserId: owner.uid,
+    assignedToUserIds: [owner.uid],
+  };
+};
+
+const isVisibleToUser = (
+  task: Task,
+  currentUser: AppUserDefinition,
+): boolean =>
+  !task.isPrivate || task.privateOwnerUserId === currentUser.uid;
+
+const readCachedTasks = (currentUser: AppUserDefinition): Task[] => {
   try {
-    const stored = localStorage.getItem(CACHE_KEY);
-    if (stored) return (JSON.parse(stored) as Task[]).map(normalizeTask);
+    const userStored = localStorage.getItem(cacheKey(currentUser.uid));
+    const legacyStored = localStorage.getItem(LEGACY_CACHE_KEY);
+    const stored = userStored || legacyStored;
+    if (stored) {
+      return (JSON.parse(stored) as Task[])
+        .map((task) => normalizeTaskForUser(task, currentUser))
+        .filter((task) => isVisibleToUser(task, currentUser));
+    }
   } catch {
     // Ignore corrupted local cache and fall back to demo data.
   }
-  return createDemoTasks().map(normalizeTask);
+
+  return createDemoTasks()
+    .map((task) => normalizeTaskForUser(task, currentUser))
+    .filter((task) => isVisibleToUser(task, currentUser));
 };
 
-const storeCachedTasks = (tasks: Task[]): void => {
-  localStorage.setItem(CACHE_KEY, JSON.stringify(tasks));
+const storeCachedTasks = (
+  tasks: Task[],
+  currentUser: AppUserDefinition,
+): void => {
+  const visibleTasks = tasks.filter((task) => isVisibleToUser(task, currentUser));
+  localStorage.setItem(cacheKey(currentUser.uid), JSON.stringify(visibleTasks));
 };
 
 const readPendingOperations = (): PendingOperation[] => {
@@ -196,30 +260,68 @@ const stripUndefined = <T,>(value: T): T =>
 const tasksToRecord = (tasks: Task[]): Record<string, Task> =>
   Object.fromEntries(tasks.map((task) => [task.id, stripUndefined(task)]));
 
-const recordToTasks = (value: unknown): Task[] => {
+const recordToTasks = (
+  value: unknown,
+  currentUser: AppUserDefinition,
+  privateTasks = false,
+): Task[] => {
   if (!value || typeof value !== "object") return [];
   return Object.values(value as Record<string, Task>)
     .filter((task): task is Task => Boolean(task?.id))
-    .map(normalizeTask);
+    .map((task) =>
+      normalizeTaskForUser(
+        privateTasks
+          ? {
+              ...task,
+              isPrivate: true,
+              privateOwnerUserId: currentUser.uid,
+            }
+          : task,
+        currentUser,
+      ),
+    )
+    .filter((task) => isVisibleToUser(task, currentUser));
 };
 
 const applyPendingOperations = (
   remoteTasks: Task[],
   operations: PendingOperation[],
+  currentUser: AppUserDefinition,
 ): Task[] => {
   let map = new Map(remoteTasks.map((task) => [task.id, task]));
 
   for (const operation of operations) {
+    if (operation.actorUserId && operation.actorUserId !== currentUser.uid) {
+      continue;
+    }
+
     if (operation.type === "replace") {
-      map = new Map(operation.tasks.map((task) => [task.id, normalizeTask(task)]));
+      map = new Map(
+        operation.tasks
+          .map((task) =>
+            normalizeTaskForUser(
+              task,
+              currentUser,
+              task.isPrivate === true,
+            ),
+          )
+          .filter((task) => isVisibleToUser(task, currentUser))
+          .map((task) => [task.id, task]),
+      );
     } else if (operation.type === "upsert") {
-      map.set(operation.task.id, normalizeTask(operation.task));
+      const task = normalizeTaskForUser(
+        operation.task,
+        currentUser,
+        operation.task.isPrivate === true,
+      );
+      if (isVisibleToUser(task, currentUser)) map.set(task.id, task);
+      else map.delete(task.id);
     } else {
       map.delete(operation.taskId);
     }
   }
 
-  return [...map.values()];
+  return [...map.values()].filter((task) => isVisibleToUser(task, currentUser));
 };
 
 const needsIdentityMigration = (task: Partial<Task>): boolean => {
@@ -266,7 +368,7 @@ export interface UseTasksResult {
 export const useTasks = (
   currentUser: AppUserDefinition,
 ): UseTasksResult => {
-  const [tasks, setTasks] = useState<Task[]>(readCachedTasks);
+  const [tasks, setTasks] = useState<Task[]>(() => readCachedTasks(currentUser));
   const [syncState, setSyncState] = useState<SyncState>(
     isFirebaseConfigured() ? "connecting" : "local",
   );
@@ -279,12 +381,19 @@ export const useTasks = (
   const mountedRef = useRef(true);
   const firebaseConnectedRef = useRef(false);
   const migrationAttemptedRef = useRef(false);
+  const publicRemoteRef = useRef<Task[]>([]);
+  const privateRemoteRef = useRef<Task[]>([]);
 
-  const updateLocalTasks = useCallback((nextTasks: Task[]) => {
-    const normalized = nextTasks.map(normalizeTask);
-    setTasks(normalized);
-    storeCachedTasks(normalized);
-  }, []);
+  const updateLocalTasks = useCallback(
+    (nextTasks: Task[]) => {
+      const normalized = nextTasks
+        .map((task) => normalizeTaskForUser(task, currentUser))
+        .filter((task) => isVisibleToUser(task, currentUser));
+      setTasks(normalized);
+      storeCachedTasks(normalized, currentUser);
+    },
+    [currentUser],
+  );
 
   const queueOperation = useCallback((operation: PendingOperation) => {
     const next = [...readPendingOperations(), operation];
@@ -323,14 +432,45 @@ export const useTasks = (
         }
 
         if (operation.type === "upsert") {
-          await set(
-            ref(database, `tasks/${operation.task.id}`),
-            stripUndefined(operation.task),
+          const task = normalizeTaskForUser(
+            operation.task,
+            currentUser,
+            operation.task.isPrivate === true,
           );
+          if (task.isPrivate) {
+            await update(ref(database), {
+              [`privateTasks/${currentUser.uid}/${task.id}`]: stripUndefined(task),
+              [`tasks/${task.id}`]: null,
+            });
+          } else {
+            await update(ref(database), {
+              [`tasks/${task.id}`]: stripUndefined(task),
+              [`privateTasks/${currentUser.uid}/${task.id}`]: null,
+            });
+          }
         } else if (operation.type === "delete") {
-          await remove(ref(database, `tasks/${operation.taskId}`));
+          await update(ref(database), {
+            [`tasks/${operation.taskId}`]: null,
+            [`privateTasks/${currentUser.uid}/${operation.taskId}`]: null,
+          });
         } else {
-          await set(ref(database, "tasks"), tasksToRecord(operation.tasks));
+          const normalizedTasks = operation.tasks
+            .map((task) =>
+              normalizeTaskForUser(
+                task,
+                currentUser,
+                task.isPrivate === true,
+              ),
+            )
+            .filter((task) => isVisibleToUser(task, currentUser));
+          const publicTasks = normalizedTasks.filter((task) => !task.isPrivate);
+          const privateTasks = normalizedTasks.filter((task) => task.isPrivate);
+
+          await set(ref(database, "tasks"), tasksToRecord(publicTasks));
+          await set(
+            ref(database, `privateTasks/${currentUser.uid}`),
+            tasksToRecord(privateTasks),
+          );
         }
 
         removePendingOperation(operation.id);
@@ -349,7 +489,7 @@ export const useTasks = (
         return false;
       }
     },
-    [currentUser.uid, removePendingOperation],
+    [currentUser, removePendingOperation],
   );
 
   const retrySync = useCallback(async () => {
@@ -395,12 +535,10 @@ export const useTasks = (
       const succeeded = await executeOperation(operation);
       if (!succeeded) break;
     }
-  }, [executeOperation]);
+  }, [currentUser.uid, executeOperation]);
 
   const submitOperation = useCallback(
     (operation: PendingOperation) => {
-      // Local persistence is the UI completion point. Firebase runs in the
-      // background so an offline write never blocks the task form.
       const attributedOperation: PendingOperation = {
         ...operation,
         actorUserId: operation.actorUserId || currentUser.uid,
@@ -426,11 +564,15 @@ export const useTasks = (
 
   const saveTask = useCallback(
     async (task: Task) => {
-      const normalized = normalizeTask({
-        ...task,
-        lastModifiedByUserId: currentUser.uid,
-      });
-      const current = readCachedTasks();
+      const normalized = normalizeTaskForUser(
+        {
+          ...task,
+          lastModifiedByUserId: currentUser.uid,
+        },
+        currentUser,
+        task.isPrivate === true,
+      );
+      const current = readCachedTasks(currentUser);
       const exists = current.some((item) => item.id === normalized.id);
       const next = exists
         ? current.map((item) => (item.id === normalized.id ? normalized : item))
@@ -442,7 +584,7 @@ export const useTasks = (
         task: normalized,
       });
     },
-    [currentUser.uid, submitOperation, updateLocalTasks],
+    [currentUser, submitOperation, updateLocalTasks],
   );
 
   const completeTask = useCallback(
@@ -451,7 +593,7 @@ export const useTasks = (
       completedBy: AppUserDefinition,
     ): Promise<CompletedTaskUndo> => {
       const timestamp = new Date().toISOString();
-      const originalTask = normalizeTask(task);
+      const originalTask = normalizeTaskForUser(task, currentUser);
       const completedTask: Task = {
         ...originalTask,
         status: "done",
@@ -501,16 +643,16 @@ export const useTasks = (
 
       return { originalTask, generatedTaskId };
     },
-    [saveTask],
+    [currentUser, saveTask],
   );
 
   const deleteTask = useCallback(
     async (taskId: string) => {
-      const next = readCachedTasks().filter((task) => task.id !== taskId);
+      const next = readCachedTasks(currentUser).filter((task) => task.id !== taskId);
       updateLocalTasks(next);
       submitOperation({ id: crypto.randomUUID(), type: "delete", taskId });
     },
-    [submitOperation, updateLocalTasks],
+    [currentUser, submitOperation, updateLocalTasks],
   );
 
   const undoComplete = useCallback(
@@ -535,13 +677,19 @@ export const useTasks = (
 
   const replaceTasks = useCallback(
     async (nextTasks: Task[]) => {
-      const normalized = nextTasks.map((task) =>
-        normalizeTask({
-          ...task,
-          source: task.source || "import",
-          lastModifiedByUserId: currentUser.uid,
-        }),
-      );
+      const normalized = nextTasks
+        .map((task) =>
+          normalizeTaskForUser(
+            {
+              ...task,
+              source: task.source || "import",
+              lastModifiedByUserId: currentUser.uid,
+            },
+            currentUser,
+            task.isPrivate === true,
+          ),
+        )
+        .filter((task) => isVisibleToUser(task, currentUser));
       updateLocalTasks(normalized);
       submitOperation({
         id: crypto.randomUUID(),
@@ -549,34 +697,64 @@ export const useTasks = (
         tasks: normalized,
       });
     },
-    [currentUser.uid, submitOperation, updateLocalTasks],
+    [currentUser, submitOperation, updateLocalTasks],
   );
 
   const mergeTasks = useCallback(
     async (importedTasks: Task[]) => {
-      const map = new Map(readCachedTasks().map((task) => [task.id, task]));
-      importedTasks.forEach((task) =>
-        map.set(
-          task.id,
-          normalizeTask({
-          ...task,
-          source: task.source || "import",
-          lastModifiedByUserId: currentUser.uid,
-        }),
-        ),
+      const map = new Map(
+        readCachedTasks(currentUser).map((task) => [task.id, task]),
       );
+      importedTasks.forEach((task) => {
+        const normalized = normalizeTaskForUser(
+          {
+            ...task,
+            source: task.source || "import",
+            lastModifiedByUserId: currentUser.uid,
+          },
+          currentUser,
+          task.isPrivate === true,
+        );
+        if (isVisibleToUser(normalized, currentUser)) {
+          map.set(normalized.id, normalized);
+        }
+      });
       await replaceTasks([...map.values()]);
     },
-    [currentUser.uid, replaceTasks],
+    [currentUser, replaceTasks],
   );
 
   useEffect(() => {
     mountedRef.current = true;
     migrationAttemptedRef.current = false;
+    publicRemoteRef.current = [];
+    privateRemoteRef.current = [];
+    updateLocalTasks(readCachedTasks(currentUser));
+
     if (!isFirebaseConfigured()) return () => undefined;
 
-    let unsubscribeTasks: Unsubscribe | undefined;
+    let unsubscribePublicTasks: Unsubscribe | undefined;
+    let unsubscribePrivateTasks: Unsubscribe | undefined;
     let unsubscribeConnection: Unsubscribe | undefined;
+
+    const refreshFromRemote = () => {
+      if (!mountedRef.current) return;
+      const eligiblePending = readPendingOperations().filter(
+        (operation) =>
+          !operation.actorUserId || operation.actorUserId === currentUser.uid,
+      );
+      const merged = applyPendingOperations(
+        [...publicRemoteRef.current, ...privateRemoteRef.current],
+        eligiblePending,
+        currentUser,
+      );
+      updateLocalTasks(merged);
+
+      if (!eligiblePending.length) {
+        setSyncState("synced");
+        setSyncMessage("Todos los cambios están sincronizados.");
+      }
+    };
 
     const connect = async () => {
       try {
@@ -604,7 +782,7 @@ export const useTasks = (
           },
         );
 
-        unsubscribeTasks = onValue(
+        unsubscribePublicTasks = onValue(
           ref(database, "tasks"),
           (snapshot) => {
             if (!mountedRef.current) return;
@@ -612,19 +790,19 @@ export const useTasks = (
               snapshot.val() && typeof snapshot.val() === "object"
                 ? (snapshot.val() as Record<string, Partial<Task>>)
                 : {};
-            const remoteTasks = recordToTasks(rawRecord);
-            const merged = applyPendingOperations(
-              remoteTasks,
-              readPendingOperations(),
+            publicRemoteRef.current = recordToTasks(
+              rawRecord,
+              currentUser,
+              false,
             );
-            updateLocalTasks(merged);
+            refreshFromRemote();
 
             if (
               !migrationAttemptedRef.current &&
               !readPendingOperations().length
             ) {
               migrationAttemptedRef.current = true;
-              const migratedEntries = remoteTasks.filter((task) =>
+              const migratedEntries = publicRemoteRef.current.filter((task) =>
                 needsIdentityMigration(rawRecord[task.id] || {}),
               );
               if (migratedEntries.length) {
@@ -632,15 +810,9 @@ export const useTasks = (
                   migratedEntries.map((task) => [task.id, stripUndefined(task)]),
                 );
                 void update(ref(database, "tasks"), migrationUpdate).catch(() => {
-                  // The application remains usable; migration retries on a later load.
                   migrationAttemptedRef.current = false;
                 });
               }
-            }
-
-            if (!readPendingOperations().length) {
-              setSyncState("synced");
-              setSyncMessage("Todos los cambios están sincronizados.");
             }
           },
           () => {
@@ -650,7 +822,28 @@ export const useTasks = (
           },
         );
 
-        await get(ref(database, "tasks"));
+        unsubscribePrivateTasks = onValue(
+          ref(database, `privateTasks/${currentUser.uid}`),
+          (snapshot) => {
+            if (!mountedRef.current) return;
+            privateRemoteRef.current = recordToTasks(
+              snapshot.val(),
+              currentUser,
+              true,
+            );
+            refreshFromRemote();
+          },
+          () => {
+            if (!mountedRef.current) return;
+            setSyncState("error");
+            setSyncMessage("No se pudieron cargar tus tareas privadas.");
+          },
+        );
+
+        await Promise.all([
+          get(ref(database, "tasks")),
+          get(ref(database, `privateTasks/${currentUser.uid}`)),
+        ]);
       } catch {
         firebaseConnectedRef.current = false;
         if (!mountedRef.current) return;
@@ -664,10 +857,11 @@ export const useTasks = (
     return () => {
       mountedRef.current = false;
       firebaseConnectedRef.current = false;
-      unsubscribeTasks?.();
+      unsubscribePublicTasks?.();
+      unsubscribePrivateTasks?.();
       unsubscribeConnection?.();
     };
-  }, [currentUser.uid, retrySync, updateLocalTasks]);
+  }, [currentUser, retrySync, updateLocalTasks]);
 
   return {
     tasks,

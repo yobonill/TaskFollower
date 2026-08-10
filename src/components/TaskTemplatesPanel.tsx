@@ -29,6 +29,7 @@ interface TemplateFormState {
   estimatedMinutes: string;
   priority: TaskPriority | "";
   assignedTo: TaskAssignee;
+  isPrivate: boolean;
   dueDate: string;
   dueTime: string;
   recurrenceType: RecurrenceType;
@@ -42,6 +43,7 @@ const createEmptyForm = (defaultAssignee: TaskAssignee): TemplateFormState => ({
   estimatedMinutes: "",
   priority: "",
   assignedTo: defaultAssignee,
+  isPrivate: false,
   dueDate: "",
   dueTime: "",
   recurrenceType: "none",
@@ -76,7 +78,8 @@ export function TaskTemplatesPanel({
         ? String(template.estimatedMinutes)
         : "",
       priority: template.priority || "",
-      assignedTo: template.assignedTo,
+      assignedTo: template.isPrivate ? currentUser.name : template.assignedTo,
+      isPrivate: template.isPrivate === true,
       dueDate: template.dueDate || "",
       dueTime: template.dueTime || "",
       recurrenceType: template.dueDate ? template.recurrence.type : "none",
@@ -109,7 +112,9 @@ export function TaskTemplatesPanel({
             ? Math.max(1, Number(form.estimatedMinutes))
             : undefined,
         priority: form.priority || undefined,
-        assignedTo: form.assignedTo,
+        assignedTo: form.isPrivate ? currentUser.name : form.assignedTo,
+        isPrivate: form.isPrivate,
+        privateOwnerUserId: form.isPrivate ? currentUser.uid : undefined,
         dueDate,
         dueTime: dueDate && form.dueTime ? form.dueTime : undefined,
         recurrence: {
@@ -158,7 +163,7 @@ export function TaskTemplatesPanel({
                 <div>
                   <strong>{template.name}</strong>
                   <span>
-                    {template.assignedTo}
+                    {template.isPrivate ? "🔒 Privada" : template.assignedTo}
                     {template.priority
                       ? ` · Prioridad ${priorityLabels[template.priority]}`
                       : " · Sin prioridad"}
@@ -209,20 +214,52 @@ export function TaskTemplatesPanel({
             />
           </label>
 
+          <fieldset className="quick-group">
+            <legend>Visibilidad</legend>
+            <div className="segmented-options two-options">
+              <button
+                type="button"
+                className={!form.isPrivate ? "selected" : ""}
+                onClick={() => update("isPrivate", false)}
+              >
+                Normal
+              </button>
+              <button
+                type="button"
+                className={form.isPrivate ? "selected" : ""}
+                onClick={() => {
+                  update("isPrivate", true);
+                  update("assignedTo", currentUser.name);
+                }}
+              >
+                🔒 Privada
+              </button>
+            </div>
+            {form.isPrivate && (
+              <small className="privacy-note">
+                Esta plantilla privada solo será visible para {currentUser.name} y creará tareas privadas asignadas únicamente a ese usuario.
+              </small>
+            )}
+          </fieldset>
+
           <fieldset className="quick-group template-assignee-group">
             <legend>Asignada a</legend>
-            <div className="segmented-options three-options">
-              {[...USERS, "Ambos" as const].map((user) => (
-                <button
-                  key={user}
-                  type="button"
-                  className={form.assignedTo === user ? "selected" : ""}
-                  onClick={() => update("assignedTo", user)}
-                >
-                  {user === "Ambos" ? "👥 Ambos" : user}
-                </button>
-              ))}
-            </div>
+            {form.isPrivate ? (
+              <div className="private-assignee-summary">🔒 Solo {currentUser.name}</div>
+            ) : (
+              <div className="segmented-options three-options">
+                {[...USERS, "Ambos" as const].map((user) => (
+                  <button
+                    key={user}
+                    type="button"
+                    className={form.assignedTo === user ? "selected" : ""}
+                    onClick={() => update("assignedTo", user)}
+                  >
+                    {user === "Ambos" ? "👥 Ambos" : user}
+                  </button>
+                ))}
+              </div>
+            )}
           </fieldset>
 
           <div className="form-grid">

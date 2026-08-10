@@ -16,6 +16,9 @@ export interface TaskTemplate {
   estimatedMinutes?: number;
   priority?: TaskPriority;
   assignedTo: TaskAssignee;
+  /** Visibility is configurable just like the rest of the task form. */
+  isPrivate?: boolean;
+  privateOwnerUserId?: string;
   dueDate?: string;
   dueTime?: string;
   recurrence: TaskRecurrence;

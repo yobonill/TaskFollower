@@ -8,7 +8,7 @@ import {
 import { LoginScreen } from "./components/LoginScreen";
 import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
-import { TASK_FORM_DRAFT_KEY, TaskForm } from "./components/TaskForm";
+import { getTaskFormDraftKey, TaskForm } from "./components/TaskForm";
 import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
 import { type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
@@ -387,7 +387,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     setSimilarTaskIds([]);
     setReviewEditing(false);
     if (dashboardFilter === "similar") setDashboardFilter("all");
-    if (clearDraft) localStorage.removeItem(TASK_FORM_DRAFT_KEY);
+    if (clearDraft) localStorage.removeItem(getTaskFormDraftKey(currentUser.uid));
   };
 
   const handleSave = async (task: Task, createAnother: boolean) => {
@@ -516,9 +516,17 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       source: "duplicate",
       assignedBy: currentUser.name,
       createdByUserId: currentUser.uid,
-      assignedToUserId:
-        task.assignedTo === "Ambos" ? undefined : getAssigneeUserIds(task.assignedTo)[0],
-      assignedToUserIds: getAssigneeUserIds(task.assignedTo),
+      assignedTo: task.isPrivate ? currentUser.name : task.assignedTo,
+      assignedToUserId: task.isPrivate
+        ? currentUser.uid
+        : task.assignedTo === "Ambos"
+          ? undefined
+          : getAssigneeUserIds(task.assignedTo)[0],
+      assignedToUserIds: task.isPrivate
+        ? [currentUser.uid]
+        : getAssigneeUserIds(task.assignedTo),
+      isPrivate: task.isPrivate === true,
+      privateOwnerUserId: task.isPrivate ? currentUser.uid : undefined,
       lastModifiedByUserId: currentUser.uid,
       completedAt: undefined,
       completedBy: undefined,
@@ -536,6 +544,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleReassign = async (task: Task, assignedTo: TaskAssignee) => {
+    if (task.isPrivate) {
+      showToast({
+        message: "Las tareas privadas solo pueden estar asignadas al usuario que las creó.",
+      }, 4200);
+      return;
+    }
+
     await saveTask({
       ...task,
       assignedTo,
@@ -687,7 +702,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -800,7 +815,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           />
         ) : (
           <article className="dashboard-incomplete-card" key={task.id}>
-            <span className="status-pill status-incomplete">Incompleta</span>
+            <div className="task-card-topline">
+              <span className="status-pill status-incomplete">Incompleta</span>
+              {task.isPrivate && <span className="private-task-label">🔒 Privada</span>}
+            </div>
             <h2>{task.name.trim() || "Tarea sin nombre"}</h2>
             <p>Faltan: {formatMissingRequiredFields(task)}</p>
             <small>Asignada a {task.assignedTo}</small>
@@ -1192,7 +1210,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               <div>
                 <span className="eyebrow">Gestión</span>
                 <h1>Tareas y datos</h1>
-                <p>Crea, edita, completa, importa o exporta la lista de tareas compartidas.</p>
+                <p>Crea, edita, completa, importa o exporta tus tareas. Las tareas privadas solo son visibles para su dueño.</p>
               </div>
               <button className="button button-primary" onClick={openCreateForm}>
                 + Nueva tarea
