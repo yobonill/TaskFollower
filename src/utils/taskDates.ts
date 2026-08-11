@@ -59,6 +59,21 @@ export const addDays = (date: Date, days: number): Date => {
   return next;
 };
 
+const addMonthsClamped = (date: Date, months: number): Date => {
+  const next = new Date(date);
+  const originalDay = next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth() + months);
+  const lastDayOfTargetMonth = new Date(
+    next.getFullYear(),
+    next.getMonth() + 1,
+    0,
+    12,
+  ).getDate();
+  next.setDate(Math.min(originalDay, lastDayOfTargetMonth));
+  return next;
+};
+
 export const getTaskDate = (
   task: Pick<Task, "dueDate" | "dueTime">,
 ): Date | null => {
@@ -173,10 +188,11 @@ export const getRecurrenceStartDate = (
 };
 
 /**
- * Calculates the following recurrence date. For weekday schedules, the next
- * occurrence is the first selected weekday strictly after the later of the
- * current due date and the completion date. This prevents late completion from
- * creating already-missed weekday occurrences retroactively.
+ * Calculates the following recurrence date. Every recurrence mode uses the
+ * later of the current due date and the completion date as its scheduling base.
+ * This keeps only one active occurrence at a time and guarantees that finishing
+ * an overdue occurrence never generates another occurrence that is already in
+ * the past. Early/on-time completion still preserves the original cadence.
  */
 export const getNextDueDate = (
   currentDueDate: string,
@@ -187,22 +203,21 @@ export const getNextDueDate = (
   if (!current) return currentDueDate;
 
   const interval = Math.max(1, recurrence.interval || 1);
+  let base = current;
+  const completed = parseDateLike(completedAt);
+  if (completed) {
+    const completedDate = new Date(
+      completed.getFullYear(),
+      completed.getMonth(),
+      completed.getDate(),
+      12,
+    );
+    if (completedDate.getTime() > base.getTime()) base = completedDate;
+  }
 
   if (recurrence.type === "weekdays") {
     const weekdays = normalizeWeekdays(recurrence.weekdays);
     if (!weekdays.length) return currentDueDate;
-
-    let base = current;
-    const completed = parseDateLike(completedAt);
-    if (completed) {
-      const completedDate = new Date(
-        completed.getFullYear(),
-        completed.getMonth(),
-        completed.getDate(),
-        12,
-      );
-      if (completedDate.getTime() > base.getTime()) base = completedDate;
-    }
 
     for (let offset = 1; offset <= 7; offset += 1) {
       const candidate = addDays(base, offset);
@@ -214,22 +229,22 @@ export const getNextDueDate = (
     return currentDueDate;
   }
 
-  const date = new Date(current);
+  let next = new Date(base);
   switch (recurrence.type) {
     case "daily":
-      date.setDate(date.getDate() + interval);
+      next = addDays(base, interval);
       break;
     case "weekly":
-      date.setDate(date.getDate() + interval * 7);
+      next = addDays(base, interval * 7);
       break;
     case "monthly":
-      date.setMonth(date.getMonth() + interval);
+      next = addMonthsClamped(base, interval);
       break;
     case "none":
       break;
   }
 
-  return toDateInputValue(date);
+  return toDateInputValue(next);
 };
 
 export const formatWeekdayRecurrence = (weekdays?: readonly number[]): string => {

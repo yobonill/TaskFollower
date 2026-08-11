@@ -65,7 +65,7 @@ const isFinalRecurrence = (task: Task): boolean => {
     getNextDueDate(
       task.dueDate,
       task.recurrence,
-      task.recurrence.type === "weekdays" ? new Date().toISOString() : undefined,
+      new Date().toISOString(),
     ) > task.recurrence.endDate
   );
 };
