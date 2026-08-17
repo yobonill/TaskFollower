@@ -1480,13 +1480,15 @@ h2 {
   }
 
   .mobile-header select {
-    max-width: 102px;
-    padding: 0.48rem 1.8rem 0.48rem 0.55rem;
+    width: clamp(132px, 40vw, 168px);
+    max-width: none;
+    min-height: 40px;
+    padding: 0.5rem 1.9rem 0.5rem 0.65rem;
     border: 1px solid #d5dfea;
     border-radius: 9px;
     color: var(--text);
     background: #ffffff;
-    font-size: 0.9rem;
+    font-size: 1rem;
     font-weight: 800;
   }
 
@@ -1743,7 +1745,11 @@ h2 {
   }
 
   .mobile-header {
-    grid-template-columns: 38px minmax(0, 1fr) 96px;
+    grid-template-columns: 38px minmax(0, 1fr) minmax(132px, 44vw);
+  }
+
+  .mobile-header select {
+    width: 100%;
   }
 
   .mobile-brand span:last-child {

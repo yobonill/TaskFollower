@@ -1073,7 +1073,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             </div>
             <h2>{task.name.trim() || "Tarea sin nombre"}</h2>
             <p>Faltan: {formatMissingRequiredFields(task)}</p>
-            <small>Asignada a {task.assignedTo}</small>
+            <small>Sin asignar · visible para ambos</small>
             <button className="button button-primary" type="button" onClick={() => openEditForm(task)}>
               Completar datos
             </button>
@@ -1180,21 +1180,15 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     const maximumPenalty = overdueDays * dailyPenalty;
 
     if (task.assignedTo === "Ambos") {
-      const yorkiPenalty = Math.min(maximumPenalty, profiles.Yorki.balance);
-      const yiselPenalty = Math.min(maximumPenalty, profiles.Yisel.balance);
-      if (!yorkiPenalty && !yiselPenalty) {
-        return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. No hay Papipuntos disponibles para descontar, pero el atraso quedará registrado para ambos y esta ocurrencia no podrá otorgar Papipuntos.`;
-      }
-      return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se aplicarán las penalizaciones pendientes: hasta ${yorkiPenalty} Papipuntos a Yorki y ${yiselPenalty} a Yisel.`;
+      return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se descontarán ${maximumPenalty} Papipuntos a Yorki y ${maximumPenalty} a Yisel. El saldo puede quedar en negativo.`;
+    }
+
+    if (task.isUnassigned) {
+      return "La tarea está incompleta y sin asignar, por lo que no genera penalizaciones de Papipuntos.";
     }
 
     const assignee = task.assignedTo;
-    const availableBalance = profiles[assignee].balance;
-    const actualMaximum = Math.min(maximumPenalty, availableBalance);
-    if (!actualMaximum) {
-      return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. ${assignee} no tiene Papipuntos disponibles para descontar, pero el atraso quedará registrado y esta tarea no podrá otorgar Papipuntos.`;
-    }
-    return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se descontarán hasta ${actualMaximum} Papipuntos a ${assignee} por los días de atraso pendientes.`;
+    return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se descontarán ${maximumPenalty} Papipuntos a ${assignee}. El saldo puede quedar en negativo.`;
   };
 
   const taskActionContent = taskActionDialog
@@ -1297,7 +1291,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         >
           <option value={currentUser.name}>Mis tareas</option>
           {USERS.filter((user) => user !== currentUser.name).map((user) => (
-            <option key={user} value={user}>Tareas de {user}</option>
+            <option key={user} value={user}>{user}</option>
           ))}
           <option value="all">Todas</option>
         </select>
@@ -1702,7 +1696,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                       <div className="management-main">
                         <strong>{task.name.trim() || "Tarea sin nombre"}</strong>
                         <span>
-                          {task.assignedTo} · Faltan: {formatMissingRequiredFields(task)}
+                          Sin asignar · visible para ambos · Faltan: {formatMissingRequiredFields(task)}
                         </span>
                       </div>
                       <span className="status-pill status-incomplete">Incompleta</span>

@@ -77,7 +77,10 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
     "Yorki";
 
-  const requestedPrivate = task.isPrivate === true;
+  const isIncomplete =
+    !(typeof task.name === "string" && task.name.trim()) ||
+    !(task.priority || legacyUrgency);
+  const requestedPrivate = task.isPrivate === true && !isIncomplete;
   const privateOwnerUserId = requestedPrivate
     ? task.privateOwnerUserId ||
       task.createdByUserId ||
@@ -131,8 +134,9 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     createdByUserId:
       task.createdByUserId || getAppUserByName(assignedBy).uid,
     assignedToUserId:
-      assignedTo === "Ambos" ? undefined : assignedToUserIds[0],
-    assignedToUserIds,
+      isIncomplete || assignedTo === "Ambos" ? undefined : assignedToUserIds[0],
+    assignedToUserIds: isIncomplete ? [] : assignedToUserIds,
+    isUnassigned: isIncomplete,
     isPrivate: requestedPrivate,
     privateOwnerUserId: requestedPrivate ? privateOwnerUserId : undefined,
     lastModifiedByUserId:
@@ -374,8 +378,16 @@ const needsIdentityMigration = (task: Partial<Task>): boolean => {
     return true;
   }
 
-  if (assignedTo !== "Ambos" && !task.assignedToUserId) return true;
-  if (assignedTo === "Ambos" && task.assignedToUserId) return true;
+  const incomplete =
+    !(typeof task.name === "string" && task.name.trim()) || !task.priority;
+  if (incomplete) {
+    if (task.isUnassigned !== true) return true;
+    if (currentIds.length || task.assignedToUserId) return true;
+  } else {
+    if (task.isUnassigned === true) return true;
+    if (assignedTo !== "Ambos" && !task.assignedToUserId) return true;
+    if (assignedTo === "Ambos" && task.assignedToUserId) return true;
+  }
   if (Boolean(task.completedBy) && !task.completedByUserId) return true;
   if (Boolean(task.cancelledBy) && !task.cancelledByUserId) return true;
   return false;
@@ -666,6 +678,7 @@ export const useTasks = (
             assignedToUserId:
               nextAssignedTo === "Ambos" ? undefined : nextAssigneeIds[0],
             assignedToUserIds: nextAssigneeIds,
+            isUnassigned: false,
             recurrenceOccurrenceIndex: nextOccurrence.occurrenceIndex,
             status: "pending",
             source: "recurrence",
@@ -869,12 +882,27 @@ export const useTasks = (
           ref(database, `privateTasks/${currentUser.uid}`),
           (snapshot) => {
             if (!mountedRef.current) return;
-            privateRemoteRef.current = recordToTasks(
+            const normalizedPrivateTasks = recordToTasks(
               snapshot.val(),
               currentUser,
               true,
             );
+            const tasksToMoveToShared = normalizedPrivateTasks.filter(
+              (task) => !task.isPrivate && task.isUnassigned,
+            );
+            privateRemoteRef.current = normalizedPrivateTasks.filter(
+              (task) => task.isPrivate,
+            );
             refreshFromRemote();
+
+            if (tasksToMoveToShared.length) {
+              const updates: Record<string, Task | null> = {};
+              for (const task of tasksToMoveToShared) {
+                updates[`tasks/${task.id}`] = stripUndefined(task);
+                updates[`privateTasks/${currentUser.uid}/${task.id}`] = null;
+              }
+              void update(ref(database), updates);
+            }
           },
           () => {
             if (!mountedRef.current) return;

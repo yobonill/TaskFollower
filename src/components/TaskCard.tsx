@@ -282,7 +282,7 @@ export function TaskCard({
         <span>·</span>
         <span>{formatDuration(task.estimatedMinutes)}</span>
         <span>·</span>
-        <span>{task.assignedTo}</span>
+        <span>{task.isUnassigned ? "Sin asignar" : task.assignedTo}</span>
       </div>
 
       <button

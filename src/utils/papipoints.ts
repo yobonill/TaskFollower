@@ -75,12 +75,9 @@ export const getPapipointsBalance = (
   transactions: PapipointsTransaction[],
   userId: string,
 ): number =>
-  Math.max(
-    0,
-    transactions
-      .filter((transaction) => transaction.userId === userId)
-      .reduce((total, transaction) => total + transaction.amount, 0),
-  );
+  transactions
+    .filter((transaction) => transaction.userId === userId)
+    .reduce((total, transaction) => total + transaction.amount, 0);
 
 export const getPapipointsProfile = (
   transactions: PapipointsTransaction[],
@@ -98,7 +95,7 @@ export const getPapipointsProfile = (
   const progressPercent =
     level >= MAX_LEVEL
       ? 100
-      : Math.min(100, ((balance - currentLevelStart) / span) * 100);
+      : Math.max(0, Math.min(100, ((balance - currentLevelStart) / span) * 100));
 
   return {
     userId,
@@ -128,7 +125,13 @@ export const isCompletedEarly = (task: Task, completedAt: string): boolean => {
 };
 
 export const isEligibleForOverduePenalty = (task: Task): boolean => {
-  if (task.status !== "pending" || !task.priority || !task.dueDate) return false;
+  if (
+    task.status !== "pending" ||
+    task.isUnassigned ||
+    !task.name.trim() ||
+    !task.priority ||
+    !task.dueDate
+  ) return false;
   const due = getTaskDate(task);
   if (!due || due.getTime() >= Date.now()) return false;
   return due.getTime() > new Date(PAPIPOINTS_ACTIVATION_AT).getTime();

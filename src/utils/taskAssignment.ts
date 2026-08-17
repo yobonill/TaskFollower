@@ -12,6 +12,8 @@ export const getAssigneeUserIds = (assignee: TaskAssignee): string[] =>
   getAssigneeUserNames(assignee).map((name) => APP_USERS_BY_NAME[name].uid);
 
 export const getTaskAssigneeUsers = (task: Task): AppUserDefinition[] => {
+  if (task.isUnassigned) return [];
+
   if (task.assignedTo === "Ambos") {
     return [APP_USERS_BY_NAME.Yisel, APP_USERS_BY_NAME.Yorki];
   }
@@ -33,4 +35,4 @@ export const getTaskAssigneeUsers = (task: Task): AppUserDefinition[] => {
 };
 
 export const isTaskAssignedTo = (task: Task, user: UserName): boolean =>
-  task.assignedTo === "Ambos" || task.assignedTo === user;
+  task.isUnassigned || task.assignedTo === "Ambos" || task.assignedTo === user;

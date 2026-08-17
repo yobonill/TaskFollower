@@ -87,7 +87,7 @@ function RewardPricingGuide({ cost }: { cost: number }) {
         ))}
       </div>
       <small>
-        Si la recompensa se vence, transferirá hasta <b>{overdueTransfer} PP por día</b> del proveedor al solicitante.
+        Si la recompensa se vence, transferirá <b>{overdueTransfer} PP por día</b> del proveedor al solicitante, incluso si su saldo queda en negativo.
       </small>
     </div>
   );
@@ -276,7 +276,7 @@ export function PapipointsPanel({
     const normalTaskEquivalent = Math.ceil(cost / COMPLETION_POINTS.normal);
     if (
       !window.confirm(
-        `Configurar recompensa “${reward.name}”\n\nCosto: ${cost} Papipuntos\nTiempo para entregarla: ${days} ${days === 1 ? "día" : "días"}\nEquivale aproximadamente a ${normalTaskEquivalent} ${normalTaskEquivalent === 1 ? "tarea normal" : "tareas normales"}.\nSi se vence: hasta ${overdueTransfer} Papipuntos transferidos por cada día de atraso.\n\n¿Guardar estas condiciones?`,
+        `Configurar recompensa “${reward.name}”\n\nCosto: ${cost} Papipuntos\nTiempo para entregarla: ${days} ${days === 1 ? "día" : "días"}\nEquivale aproximadamente a ${normalTaskEquivalent} ${normalTaskEquivalent === 1 ? "tarea normal" : "tareas normales"}.\nSi se vence: ${overdueTransfer} Papipuntos transferidos por cada día de atraso. El saldo del proveedor puede quedar en negativo.\n\n¿Guardar estas condiciones?`,
       )
     ) {
       return;
@@ -296,7 +296,7 @@ export function PapipointsPanel({
         : "";
     if (
       !window.confirm(
-        `Canjear “${reward.name}” costará ${cost} Papipuntos. ${partner.name} tendrá ${reward.fulfillmentDays} ${reward.fulfillmentDays === 1 ? "día" : "días"} para entregarla.${levelText}\n\nSi se vence, cada día de atraso transferirá hasta ${Math.max(1, Math.ceil(cost * 0.1))} Papipuntos de ${partner.name} hacia ti.\n\n¿Confirmar canje?`,
+        `Canjear “${reward.name}” costará ${cost} Papipuntos. ${partner.name} tendrá ${reward.fulfillmentDays} ${reward.fulfillmentDays === 1 ? "día" : "días"} para entregarla.${levelText}\n\nSi se vence, cada día de atraso transferirá ${Math.max(1, Math.ceil(cost * 0.1))} Papipuntos de ${partner.name} hacia ti, aunque su saldo quede en negativo.\n\n¿Confirmar canje?`,
       )
     ) return;
     setProcessingId(reward.id);
@@ -410,7 +410,7 @@ export function PapipointsPanel({
                 Una tarea que ya recibió penalizaciones por vencimiento no otorga Papipuntos al completarse. Si se pospone y vuelve a vencerse, puede acumular nuevas penalizaciones.
               </small>
               <small>
-                En recompensas vencidas, cada día transfiere hasta el 10% del costo original desde quien debe entregarla hacia quien la solicitó.
+                En recompensas vencidas, cada día transfiere el 10% del costo original desde quien debe entregarla hacia quien la solicitó. Los Papipuntos pueden quedar en negativo.
               </small>
             </div>
 

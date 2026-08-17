@@ -221,6 +221,12 @@ export function TaskForm({
     [form.name, form.priority],
   );
 
+  useEffect(() => {
+    if (missingFields.length > 0 && form.isPrivate) {
+      setForm((current) => ({ ...current, isPrivate: false }));
+    }
+  }, [form.isPrivate, missingFields.length]);
+
   const weekdayAdjustedDueDate = useMemo(() => {
     if (
       !form.dueDate ||
@@ -258,8 +264,13 @@ export function TaskForm({
       dueDate: editingTask.dueDate || "",
       dueTime: editingTask.dueTime || "",
       priority: editingTask.priority || "",
-      assignedTo: editingTask.isPrivate ? currentUser.name : editingTask.assignedTo,
-      isPrivate: editingTask.isPrivate === true,
+      assignedTo:
+        editingTask.isUnassigned
+          ? currentUser.name
+          : editingTask.isPrivate
+            ? currentUser.name
+            : editingTask.assignedTo,
+      isPrivate: editingTask.isUnassigned ? false : editingTask.isPrivate === true,
       recurrenceType: editingTask.recurrence.type,
       recurrenceInterval: String(editingTask.recurrence.interval),
       recurrenceWeekdays: normalizeWeekdays(editingTask.recurrence.weekdays),
@@ -377,7 +388,8 @@ export function TaskForm({
 
   const buildTask = (): Task => {
     const timestamp = new Date().toISOString();
-    const isPrivate = form.isPrivate;
+    const isIncomplete = missingFields.length > 0;
+    const isPrivate = !isIncomplete && form.isPrivate;
     const assignedTo: TaskAssignee = isPrivate ? currentUser.name : form.assignedTo;
     const recurrenceType: RecurrenceType = form.dueDate
       ? form.recurrenceType
@@ -431,10 +443,11 @@ export function TaskForm({
       assignedTo,
       createdByUserId: editingTask?.createdByUserId || currentUser.uid,
       assignedToUserId:
-        assignedTo === "Ambos"
+        isIncomplete || assignedTo === "Ambos"
           ? undefined
           : getAppUserByName(assignedTo).uid,
-      assignedToUserIds: getAssigneeUserIds(assignedTo),
+      assignedToUserIds: isIncomplete ? [] : getAssigneeUserIds(assignedTo),
+      isUnassigned: isIncomplete,
       isPrivate,
       privateOwnerUserId: isPrivate ? currentUser.uid : undefined,
       lastModifiedByUserId: currentUser.uid,
@@ -619,6 +632,7 @@ export function TaskForm({
           <button
             type="button"
             className={form.isPrivate ? "selected" : ""}
+            disabled={missingFields.length > 0}
             onClick={() => {
               update("isPrivate", true);
               update("assignedTo", currentUser.name);
@@ -627,16 +641,24 @@ export function TaskForm({
             🔒 Privada
           </button>
         </div>
-        {form.isPrivate && (
+        {missingFields.length > 0 ? (
+          <small className="privacy-note">
+            Las tareas incompletas son visibles para ambos usuarios y no se asignan hasta completar sus datos requeridos.
+          </small>
+        ) : form.isPrivate ? (
           <small className="privacy-note">
             Solo {currentUser.name} podrá ver esta tarea. Las tareas privadas no pueden asignarse a Ambos ni al otro usuario.
           </small>
-        )}
+        ) : null}
       </fieldset>
 
       <fieldset className="quick-group">
         <legend>Asignada a</legend>
-        {form.isPrivate ? (
+        {missingFields.length > 0 ? (
+          <div className="private-assignee-summary">
+            Sin asignar · visible para ambos hasta completar nombre y prioridad
+          </div>
+        ) : form.isPrivate ? (
           <div className="private-assignee-summary">
             🔒 Solo {currentUser.name}
           </div>

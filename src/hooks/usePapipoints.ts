@@ -898,11 +898,7 @@ export const usePapipoints = (
             continue;
           }
 
-          const balance = getPapipointsBalance(
-            readCachedTransactions(),
-            assignee.uid,
-          );
-          const penalty = Math.min(dailyPenalty, balance);
+          const penalty = dailyPenalty;
           const added = await upsertTransaction({
             id: transactionId,
             userId: assignee.uid,
@@ -919,10 +915,9 @@ export const usePapipoints = (
             createdByUserId: currentUser.uid,
           });
 
-          // A zero-value transaction is intentionally kept as a penalty
-          // marker when the balance is already zero. It is hidden from the
-          // visible history, but permanently removes completion eligibility.
-          if (added && penalty > 0) {
+          // Papipuntos may go below zero, so every overdue day applies the
+          // full configured penalty regardless of the current balance.
+          if (added) {
             const existing = changes.get(assignee.uid) || {
               userId: assignee.uid,
               userName: assignee.name,
@@ -1318,8 +1313,7 @@ export const usePapipoints = (
         const providerTransactionId = `reward-penalty:${claim.id}:${dayKey}:${provider.uid}`;
         if (readCachedTransactions().some((item) => item.id === providerTransactionId)) continue;
 
-        const providerBalance = getPapipointsBalance(readCachedTransactions(), provider.uid);
-        const transferAmount = Math.min(dailyAmount, providerBalance);
+        const transferAmount = dailyAmount;
         const settlement: RewardPenaltySettlement = {
           id: `${claim.id}:${dayKey}`,
           rewardClaimId: claim.id,

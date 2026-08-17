@@ -44,6 +44,8 @@ export interface Task {
   assignedToUserId?: string;
   /** Canonical assignee UID list. Shared tasks contain both users. */
   assignedToUserIds?: string[];
+  /** Incomplete tasks are intentionally unassigned and visible to both users. */
+  isUnassigned?: boolean;
   /** Private tasks are stored separately and are visible only to their owner. */
   isPrivate?: boolean;
   privateOwnerUserId?: string;
