@@ -10,7 +10,7 @@ import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
 import { getTaskFormDraftKey, TaskForm } from "./components/TaskForm";
 import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
-import { type AppUserDefinition } from "./config/appUsers";
+import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
 import { usePapipoints, type PapipointsChange } from "./hooks/usePapipoints";
 import { usePwaInstall } from "./hooks/usePwaInstall";
@@ -32,11 +32,17 @@ import {
 import {
   formatDueDate,
   formatDuration,
+  getNextDueDate,
+  getTaskDate,
   isTaskDueToday,
   isTaskOverdue,
   sortPendingTasks,
 } from "./utils/taskDates";
-import { getLevelFromPapipoints, isCompletedEarly } from "./utils/papipoints";
+import {
+  getLevelFromPapipoints,
+  isCompletedEarly,
+  OVERDUE_PENALTY,
+} from "./utils/papipoints";
 import { findSimilarOpenTasks } from "./utils/taskSimilarity";
 import { getAssigneeUserIds, isTaskAssignedTo } from "./utils/taskAssignment";
 import "./styles.css";
@@ -61,6 +67,11 @@ interface PointsFeedbackState {
   userName: string;
   levelMessage?: string;
 }
+
+type TaskActionDialog =
+  | { kind: "cancel"; task: Task }
+  | { kind: "delete"; task: Task }
+  | { kind: "stop-recurrence"; task: Task };
 
 const priorityLabels: Record<TaskPriority, string> = {
   low: "Baja",
@@ -111,6 +122,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const {
     transactions,
     rewards,
+    rewardClaims,
     profiles,
     pendingCount: papipointsPendingCount,
     removePendingTaskCreationReward,
@@ -119,8 +131,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     applyOverduePenalty,
     hasTaskOverduePenalty,
     saveReward,
+    configureReward,
+    rejectReward,
     deleteReward,
     redeemReward,
+    completeRewardClaim,
+    cancelRewardClaim,
     retrySync: retryPapipointsSync,
   } = usePapipoints(currentUser);
   const {
@@ -148,6 +164,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const [importMode, setImportMode] = useState<ImportMode>("merge");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [pointsFeedback, setPointsFeedback] = useState<PointsFeedbackState | null>(null);
+  const [taskActionDialog, setTaskActionDialog] = useState<TaskActionDialog | null>(null);
   const [installBannerHidden, setInstallBannerHidden] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -340,6 +357,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const unestimatedWorkloadCount = workloadTasks.filter(
     (task) => !task.estimatedMinutes,
   ).length;
+
+  const visibleRewardClaims = useMemo(() => {
+    const pending = rewardClaims.filter((claim) => claim.status === "pending");
+    if (selectedUser === "all") return pending;
+    const selectedUid = getAppUserByName(selectedUser).uid;
+    return pending.filter((claim) => claim.providerUserId === selectedUid);
+  }, [currentUser, rewardClaims, selectedUser]);
 
 
 
@@ -586,8 +610,60 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     }, 5200);
   };
 
-  const handleCancelTask = async (task: Task) => {
-    if (!window.confirm(`¿Cancelar la tarea “${task.name}”?`)) return;
+  const detachRecurrence = (task: Task): Task => ({
+    ...task,
+    recurrence: { type: "none", interval: 1 },
+  });
+
+  const createNextRecurringOccurrence = async (task: Task): Promise<string | undefined> => {
+    if (task.recurrence.type === "none" || !task.dueDate) return undefined;
+    const timestamp = new Date().toISOString();
+    const nextDueDate = getNextDueDate(task.dueDate, task.recurrence, timestamp);
+    if (task.recurrence.endDate && nextDueDate > task.recurrence.endDate) return undefined;
+
+    const nextTaskId = crypto.randomUUID();
+    await saveTask({
+      ...task,
+      id: nextTaskId,
+      dueDate: nextDueDate,
+      status: "pending",
+      source: "recurrence",
+      recurrenceSeriesId: task.recurrenceSeriesId || task.id,
+      completedAt: undefined,
+      completedBy: undefined,
+      completedByUserId: undefined,
+      cancelledAt: undefined,
+      cancelledBy: undefined,
+      cancelledByUserId: undefined,
+      lastModifiedByUserId: currentUser.uid,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    return nextTaskId;
+  };
+
+  const stopOtherActiveOccurrencesInSeries = async (task: Task): Promise<void> => {
+    const seriesId = task.recurrenceSeriesId || task.id;
+    const activeSeriesTasks = tasks.filter((item) => {
+      if (item.id === task.id || item.status !== "pending" || item.recurrence.type === "none") return false;
+      return (item.recurrenceSeriesId || item.id) === seriesId;
+    });
+    for (const item of activeSeriesTasks) {
+      await saveTask({
+        ...item,
+        recurrence: { type: "none", interval: 1 },
+        lastModifiedByUserId: currentUser.uid,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  };
+
+  const handleCancelTask = (task: Task) => {
+    setTaskActionDialog({ kind: "cancel", task });
+  };
+
+  const executeCancelTask = async (task: Task, continueRecurrence: boolean) => {
+    setTaskActionDialog(null);
     const original = task;
 
     let overdueChanges: PapipointsChange[] = [];
@@ -597,15 +673,22 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     }
 
     const removedLegacyCreation = await removePendingTaskCreationReward(task.id);
+    const timestamp = new Date().toISOString();
     await saveTask({
-      ...task,
+      ...detachRecurrence(task),
       status: "cancelled",
-      cancelledAt: new Date().toISOString(),
+      cancelledAt: timestamp,
       cancelledBy: currentUser.name,
       cancelledByUserId: currentUser.uid,
       lastModifiedByUserId: currentUser.uid,
-      updatedAt: new Date().toISOString(),
+      updatedAt: timestamp,
     });
+
+    const generatedTaskId =
+      continueRecurrence && task.recurrence.type !== "none"
+        ? await createNextRecurringOccurrence(task)
+        : undefined;
+
     if (removedLegacyCreation && !overdueChanges.length) {
       showPointsFeedback(
         removedLegacyCreation.amount,
@@ -613,12 +696,20 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         removedLegacyCreation.userName,
       );
     }
+
     showToast({
       message: overdueChanges.length
-        ? "Tarea cancelada. La penalización por vencimiento se mantiene."
-        : "Tarea cancelada.",
+        ? continueRecurrence
+          ? "Ocurrencia cancelada. Se aplicó la penalización por vencimiento y la serie continuará con la próxima fecha."
+          : "Tarea recurrente cancelada. Se aplicó la penalización por vencimiento y la recurrencia quedó detenida."
+        : continueRecurrence
+          ? "Ocurrencia cancelada. No otorgará Papipuntos y la serie continuará con la próxima fecha."
+          : task.recurrence.type !== "none"
+            ? "Tarea cancelada y recurrencia detenida."
+            : "Tarea cancelada.",
       actionLabel: "Deshacer",
       action: async () => {
+        if (generatedTaskId) await deleteTask(generatedTaskId);
         await saveTask({
           ...original,
           status: "pending",
@@ -632,9 +723,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           {
             message: overdueChanges.length
               ? "La tarea fue restaurada. La penalización por vencimiento se mantiene."
-              : "La tarea fue restaurada.",
+              : "La tarea y su configuración de recurrencia fueron restauradas.",
           },
-          3800,
+          4200,
         );
       },
     });
@@ -654,9 +745,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     showToast({ message: "Tarea restaurada." }, 3200);
   };
 
-  const handleDelete = async (task: Task) => {
-    const taskName = task.name.trim() || "Tarea sin nombre";
-    if (!window.confirm(`¿Eliminar permanentemente la tarea “${taskName}”?`)) return;
+  const handleDelete = (task: Task) => {
+    setTaskActionDialog({ kind: "delete", task });
+  };
+
+  const executeDeleteTask = async (task: Task, continueRecurrence: boolean) => {
+    setTaskActionDialog(null);
 
     let overdueChanges: PapipointsChange[] = [];
     if (isTaskOverdue(task)) {
@@ -664,12 +758,48 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       showPointsChangesFeedback(overdueChanges, `Tarea vencida: ${task.name}`);
     }
 
+    if (!continueRecurrence && task.recurrence.type !== "none") {
+      await stopOtherActiveOccurrencesInSeries(task);
+    }
+
     await deleteTask(task.id);
+
+    if (
+      continueRecurrence &&
+      task.status === "pending" &&
+      task.recurrence.type !== "none"
+    ) {
+      await createNextRecurringOccurrence(task);
+    }
+
     showToast({
       message: overdueChanges.length
-        ? "Tarea eliminada. La penalización aplicada permanece en el historial de Papipuntos."
-        : "Tarea eliminada. Los movimientos de Papipuntos ya resueltos se conservan.",
-    }, 4800);
+        ? continueRecurrence
+          ? "Ocurrencia eliminada. La penalización aplicada permanece y la serie continuará."
+          : "Tarea eliminada y recurrencia detenida. La penalización aplicada permanece en el historial de Papipuntos."
+        : continueRecurrence && task.recurrence.type !== "none"
+          ? "Ocurrencia eliminada. La próxima ocurrencia de la serie se mantiene o fue creada."
+          : task.recurrence.type !== "none"
+            ? "Tarea eliminada y recurrencia detenida. Las ocurrencias anteriores permanecen en el historial."
+            : "Tarea eliminada. Los movimientos de Papipuntos ya resueltos se conservan.",
+    }, 5200);
+  };
+
+  const handleStopRecurrence = (task: Task) => {
+    setTaskActionDialog({ kind: "stop-recurrence", task });
+  };
+
+  const executeStopRecurrence = async (task: Task) => {
+    setTaskActionDialog(null);
+    await saveTask({
+      ...task,
+      recurrence: { type: "none", interval: 1 },
+      lastModifiedByUserId: currentUser.uid,
+      updatedAt: new Date().toISOString(),
+    });
+    showToast({
+      message: "Recurrencia detenida. La tarea actual sigue pendiente y podrá completarse normalmente, pero no creará otra ocurrencia.",
+    }, 5200);
   };
 
   const handleInstall = async () => {
@@ -810,8 +940,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             onDuplicate={(item) => void handleDuplicate(item)}
             onReassign={(item, user) => void handleReassign(item, user)}
             onPostpone={(item, dueDate) => void handlePostpone(item, dueDate)}
-            onCancelTask={(item) => void handleCancelTask(item)}
-            onDelete={(item) => void handleDelete(item)}
+            onCancelTask={(item) => handleCancelTask(item)}
+            onStopRecurrence={(item) => handleStopRecurrence(item)}
+            onDelete={(item) => handleDelete(item)}
           />
         ) : (
           <article className="dashboard-incomplete-card" key={task.id}>
@@ -831,6 +962,63 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     </div>
   );
 
+  const renderRewardClaims = () => (
+    <section className="dashboard-task-group reward-obligation-section">
+      <div className="dashboard-section-heading">
+        <div>
+          <span className="eyebrow">Entrega prioritaria</span>
+          <h2>🎁 Recompensas por entregar</h2>
+        </div>
+        <span className="section-count">{visibleRewardClaims.length}</span>
+      </div>
+      <div className="reward-obligation-grid">
+        {visibleRewardClaims.map((claim) => {
+          const requesterName = claim.requesterUserId === currentUser.uid
+            ? currentUser.name
+            : currentUser.name === "Yorki" ? "Yisel" : "Yorki";
+          const providerName = claim.providerUserId === currentUser.uid
+            ? currentUser.name
+            : currentUser.name === "Yorki" ? "Yisel" : "Yorki";
+          const [year, month, day] = claim.dueDate.split("-").map(Number);
+          const dueDate = new Date(year, month - 1, day);
+          const dueLabel = new Intl.DateTimeFormat(APP_LOCALE, { weekday: "short", day: "numeric", month: "short" })
+            .format(dueDate);
+          const today = new Date();
+          const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          const overdueDays = Math.max(0, Math.floor((todayStart.getTime() - dueDate.getTime()) / 86_400_000));
+          const isRewardOverdue = overdueDays > 0;
+          const dailyPenalty = Math.max(1, Math.ceil(claim.cost * claim.overdueTransferPercent / 100));
+          const isProvider = claim.providerUserId === currentUser.uid;
+          const isRequester = claim.requesterUserId === currentUser.uid;
+          return (
+            <article className={`reward-obligation-card ${isRewardOverdue ? "reward-obligation-overdue" : ""}`} key={claim.id}>
+              <div className="reward-obligation-topline"><span>{isRewardOverdue ? `⚠ VENCIDA · ${overdueDays} ${overdueDays === 1 ? "día" : "días"}` : "🎁 RECOMPENSA"}</span><strong>PRIORIDAD MÁXIMA</strong></div>
+              <h3>{claim.rewardName}</h3>
+              {claim.rewardDescription && <p>{claim.rewardDescription}</p>}
+              <div className="reward-obligation-meta">
+                <span>Para: <b>{requesterName}</b></span>
+                <span>La entrega: <b>{providerName}</b></span>
+                <span>Fecha límite: <b>{dueLabel}</b></span>
+                <span>Vencida: <b>{dailyPenalty} PP/día</b> se transfieren a {requesterName}</span>
+              </div>
+              <div className="reward-actions">
+                {isProvider && <button className="button button-primary" type="button" onClick={() => {
+                  if (!window.confirm(`Confirmar entrega de “${claim.rewardName}”.\n\nAl completarla se detendrán las penalizaciones diarias por atraso.`)) return;
+                  void completeRewardClaim(claim).then((result) => showToast({ message: result.message }, 5200));
+                }}>Marcar como entregada</button>}
+                {isRequester && <button className="button button-quiet danger-action" type="button" onClick={() => {
+                  const refund = Math.floor(claim.cost * 0.7);
+                  if (!window.confirm(`Cancelar recompensa\n\nRecuperarás solo el 70% (${refund} Papipuntos). Las compensaciones por atraso ya transferidas no se devolverán.\n\n¿Continuar?`)) return;
+                  void cancelRewardClaim(claim).then((result) => showToast({ message: result.message }, 5200));
+                }}>Cancelar canje</button>}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+
   const filterLabels: Record<Exclude<DashboardFilter, "all" | "similar">, string> = {
     overdue: "Tareas vencidas",
     today: "Tareas para hoy",
@@ -838,6 +1026,98 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     undated: "Tareas sin fecha",
     incomplete: "Tareas incompletas",
   };
+
+  const getPenaltyPreview = (task: Task): string => {
+    if (!isTaskOverdue(task) || !task.priority || !task.dueDate) return "";
+    const due = getTaskDate(task);
+    if (!due) return "";
+    const today = new Date();
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const dueStart = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+    const calendarDifference = Math.max(
+      0,
+      Math.round((todayStart.getTime() - dueStart.getTime()) / 86_400_000),
+    );
+    const overdueDays = task.dueTime
+      ? Math.max(1, calendarDifference + 1)
+      : Math.max(1, calendarDifference);
+    const dailyPenalty = OVERDUE_PENALTY[task.priority];
+    const maximumPenalty = overdueDays * dailyPenalty;
+
+    if (task.assignedTo === "Ambos") {
+      const yorkiPenalty = Math.min(maximumPenalty, profiles.Yorki.balance);
+      const yiselPenalty = Math.min(maximumPenalty, profiles.Yisel.balance);
+      if (!yorkiPenalty && !yiselPenalty) {
+        return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. No hay Papipuntos disponibles para descontar, pero el atraso quedará registrado para ambos y esta ocurrencia no podrá otorgar Papipuntos.`;
+      }
+      return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se aplicarán las penalizaciones pendientes: hasta ${yorkiPenalty} Papipuntos a Yorki y ${yiselPenalty} a Yisel.`;
+    }
+
+    const assignee = task.assignedTo;
+    const availableBalance = profiles[assignee].balance;
+    const actualMaximum = Math.min(maximumPenalty, availableBalance);
+    if (!actualMaximum) {
+      return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. ${assignee} no tiene Papipuntos disponibles para descontar, pero el atraso quedará registrado y esta tarea no podrá otorgar Papipuntos.`;
+    }
+    return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se descontarán hasta ${actualMaximum} Papipuntos a ${assignee} por los días de atraso pendientes.`;
+  };
+
+  const taskActionContent = taskActionDialog
+    ? (() => {
+        const task = taskActionDialog.task;
+        const recurring = task.recurrence.type !== "none";
+        const penaltyText = getPenaltyPreview(task);
+
+        if (taskActionDialog.kind === "stop-recurrence") {
+          return {
+            title: "Detener recurrencia",
+            paragraphs: [
+              "La tarea actual seguirá pendiente y podrás completarla normalmente.",
+              "Después de detener la recurrencia, completar esta tarea no creará una nueva ocurrencia.",
+              penaltyText
+                ? `${penaltyText} Detener la recurrencia por sí sola no aplica ni elimina esa penalización.`
+                : "Detener la recurrencia no modifica los Papipuntos de la tarea actual.",
+            ],
+          };
+        }
+
+        if (taskActionDialog.kind === "cancel") {
+          return {
+            title: recurring ? "Cancelar tarea recurrente" : "Cancelar tarea",
+            paragraphs: recurring
+              ? [
+                  penaltyText,
+                  "Si cancelas solo esta ocurrencia, quedará registrada como cancelada, no otorgará Papipuntos y se creará la próxima ocurrencia válida de la serie.",
+                  "Si cancelas esta y detienes la recurrencia, esta ocurrencia quedará cancelada y no se crearán nuevas tareas de esta serie.",
+                ].filter(Boolean)
+              : [
+                  penaltyText,
+                  "La tarea quedará registrada como cancelada y no otorgará Papipuntos. Podrás restaurarla posteriormente; cualquier penalización por vencimiento aplicada permanecerá.",
+                ].filter(Boolean),
+          };
+        }
+
+        const historical = task.status !== "pending";
+        return {
+          title: recurring ? "Eliminar tarea recurrente" : "Eliminar tarea",
+          paragraphs: recurring
+            ? [
+                penaltyText,
+                historical
+                  ? "Eliminar solo esta ocurrencia borrará únicamente este registro histórico. La ocurrencia activa de la serie no será duplicada ni eliminada."
+                  : "Eliminar solo esta ocurrencia la borrará permanentemente y se creará la próxima ocurrencia válida para que la serie continúe.",
+                historical
+                  ? "Eliminar esta y detener la recurrencia borrará este registro y hará que la ocurrencia activa de la serie deje de repetirse. El resto del historial se conservará."
+                  : "Eliminar esta y detener la recurrencia borrará esta ocurrencia y no se crearán nuevas tareas de la serie. Las ocurrencias anteriores permanecerán en el historial.",
+                "Los movimientos de Papipuntos que ya hayan sido resueltos no se eliminan al borrar la tarea.",
+              ].filter(Boolean)
+            : [
+                penaltyText,
+                "La tarea será eliminada permanentemente y no podrá restaurarse. Los movimientos de Papipuntos ya resueltos se conservarán.",
+              ].filter(Boolean),
+        };
+      })()
+    : null;
 
   return (
     <div className={`app-shell ${menuOpen ? "menu-open" : "menu-collapsed"}`}>
@@ -1109,6 +1389,8 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               </section>
             )}
 
+            {visibleRewardClaims.length > 0 && renderRewardClaims()}
+
             {dashboardFilter !== "all" ? (
               <section className="dashboard-filtered-section">
                 <div className="dashboard-section-heading">
@@ -1196,10 +1478,15 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             currentUser={currentUser}
             profiles={profiles}
             rewards={rewards}
+            rewardClaims={rewardClaims}
             transactions={transactions}
             onSaveReward={saveReward}
+            onConfigureReward={configureReward}
+            onRejectReward={rejectReward}
             onDeleteReward={deleteReward}
             onRedeemReward={redeemReward}
+            onCompleteRewardClaim={completeRewardClaim}
+            onCancelRewardClaim={cancelRewardClaim}
             onMessage={(message) => showToast({ message }, 4200)}
           />
         )}
@@ -1446,6 +1733,73 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           <button className="toast-close" type="button" aria-label="Cerrar mensaje" onClick={() => setToast(null)}>
             ×
           </button>
+        </div>
+      )}
+
+      {taskActionDialog && taskActionContent && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setTaskActionDialog(null)}>
+          <div
+            className="action-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-action-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="eyebrow">Confirmar acción</span>
+            <h2 id="task-action-dialog-title">{taskActionContent.title}</h2>
+            <strong className="action-task-name">“{taskActionDialog.task.name || "Tarea sin nombre"}”</strong>
+            <div className="action-confirm-copy">
+              {taskActionContent.paragraphs.map((paragraph, index) => (
+                <p key={`${index}-${paragraph}`}>{paragraph}</p>
+              ))}
+            </div>
+
+            <div className="action-confirm-buttons">
+              {taskActionDialog.kind === "stop-recurrence" && (
+                <button className="button button-primary" type="button" onClick={() => void executeStopRecurrence(taskActionDialog.task)}>
+                  Detener recurrencia
+                </button>
+              )}
+
+              {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type === "none" && (
+                <button className="button button-primary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, false)}>
+                  Cancelar tarea
+                </button>
+              )}
+
+              {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type !== "none" && (
+                <>
+                  <button className="button button-primary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, true)}>
+                    Cancelar solo esta ocurrencia
+                  </button>
+                  <button className="button button-secondary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, false)}>
+                    Cancelar esta y detener la recurrencia
+                  </button>
+                </>
+              )}
+
+              {taskActionDialog.kind === "delete" && taskActionDialog.task.recurrence.type === "none" && (
+                <button className="button button-primary danger-button" type="button" onClick={() => void executeDeleteTask(taskActionDialog.task, false)}>
+                  Eliminar permanentemente
+                </button>
+              )}
+
+              {taskActionDialog.kind === "delete" && taskActionDialog.task.recurrence.type !== "none" && (
+                <>
+                  <button className="button button-primary danger-button" type="button" onClick={() => void executeDeleteTask(taskActionDialog.task, true)}>
+                    Eliminar solo esta ocurrencia
+                  </button>
+                  <button className="button button-secondary danger-outline-button" type="button" onClick={() => void executeDeleteTask(taskActionDialog.task, false)}>
+                    Eliminar esta y detener la recurrencia
+                  </button>
+                </>
+              )}
+
+              <button className="button button-quiet" type="button" onClick={() => setTaskActionDialog(null)}>
+                Volver
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -5,7 +5,9 @@ export type PapipointsTransactionType =
   | "task_completed"
   | "task_early"
   | "task_overdue"
-  | "reward_redeemed";
+  | "reward_redeemed"
+  | "reward_refund"
+  | "reward_overdue_transfer";
 
 export interface PapipointsTransaction {
   id: string;
@@ -16,17 +18,13 @@ export interface PapipointsTransaction {
   description: string;
   taskId?: string;
   rewardId?: string;
+  rewardClaimId?: string;
   createdAt: string;
   createdByUserId: string;
 }
 
 export type PapipointsTaskOutcome = "rewarded" | "penalized";
 
-/**
- * One task can resolve its Papipuntos lifecycle only once. The resolution is
- * shared by all devices and, for shared tasks, contains the amount applied to
- * each participant.
- */
 export interface PapipointsTaskResolution {
   taskId: string;
   claimId: string;
@@ -37,14 +35,66 @@ export interface PapipointsTaskResolution {
   description: string;
 }
 
+export type PapipointsRewardStatus =
+  | "pending_configuration"
+  | "available"
+  | "rejected";
+
 export interface PapipointsReward {
   id: string;
   name: string;
   description: string;
-  cost: number;
+  /** The user who wants/requests this reward. */
+  requestedByUserId: string;
+  /** The partner who prices and fulfills this reward. */
+  providerUserId: string;
+  status: PapipointsRewardStatus;
+  cost?: number;
+  /** Calendar days the provider gets after a claim is created. */
+  fulfillmentDays?: number;
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  createdByUserId: string;
+  configuredAt?: string;
+  configuredByUserId?: string;
+  rejectedAt?: string;
+  rejectedByUserId?: string;
+}
+
+export type RewardClaimStatus = "pending" | "completed" | "cancelled";
+
+export interface PapipointsRewardClaim {
+  id: string;
+  rewardId: string;
+  rewardName: string;
+  rewardDescription: string;
+  requesterUserId: string;
+  providerUserId: string;
+  cost: number;
+  fulfillmentDays: number;
+  /** 10 means 10% of the original reward cost per overdue day. */
+  overdueTransferPercent: number;
+  claimedAt: string;
+  dueDate: string;
+  status: RewardClaimStatus;
+  completedAt?: string;
+  completedByUserId?: string;
+  cancelledAt?: string;
+  cancelledByUserId?: string;
+  refundAmount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RewardPenaltySettlement {
+  id: string;
+  rewardClaimId: string;
+  dayKey: string;
+  providerUserId: string;
+  requesterUserId: string;
+  amount: number;
+  createdAt: string;
   createdByUserId: string;
 }
 

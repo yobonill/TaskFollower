@@ -2723,3 +2723,222 @@ h2 {
     padding-inline: 0.15rem;
   }
 }
+
+/* Reward agreements and fulfillment obligations */
+.reward-status-pill {
+  display: inline-flex;
+  width: fit-content;
+  margin-bottom: 0.35rem;
+  padding: 0.22rem 0.48rem;
+  border-radius: 999px;
+  background: #f3e8ff;
+  color: #7139bd;
+  font-size: 0.78rem;
+  font-weight: 950;
+  letter-spacing: 0.035em;
+}
+
+.reward-status-active {
+  background: #fff2c6;
+  color: #805900;
+}
+
+.reward-pending {
+  border-color: #c8a7f0;
+  background: #fcf9ff;
+}
+
+.reward-config-grid {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  width: 100%;
+}
+
+.reward-config-grid .reward-actions {
+  grid-column: 1 / -1;
+}
+
+.reward-form-help {
+  margin: 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+.reward-obligation-section {
+  position: relative;
+  z-index: 2;
+  margin-bottom: 1rem;
+  padding: 0.85rem;
+  border: 1px solid #d9bc66;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #fffdf4 0%, #fff8dc 100%);
+  box-shadow: 0 0 0 1px rgba(220, 167, 35, 0.09), 0 10px 30px rgba(183, 132, 15, 0.11);
+}
+
+.reward-obligation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 0.8rem;
+}
+
+.reward-obligation-card {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem;
+  border: 2px solid #e0ae2d;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 0 18px rgba(241, 183, 32, 0.28);
+  animation: rewardGlow 2.4s ease-in-out infinite alternate;
+}
+
+.reward-obligation-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: linear-gradient(#f2c94c, #8d5bd1);
+  content: "";
+}
+
+.reward-obligation-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: center;
+  color: #7a5710;
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.reward-obligation-topline strong {
+  color: #7c4fd1;
+  font-size: 0.72rem;
+}
+
+.reward-obligation-card h3 {
+  margin: 0.55rem 0 0;
+  font-size: 1.32rem;
+}
+
+.reward-obligation-card p {
+  margin: 0.4rem 0;
+  color: var(--muted);
+}
+
+.reward-obligation-meta {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0.75rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.reward-obligation-meta b {
+  color: var(--text);
+}
+
+.reward-claim-card {
+  border-color: #e0ae2d;
+  background: #fffdf4;
+}
+
+@keyframes rewardGlow {
+  from { box-shadow: 0 0 10px rgba(241, 183, 32, 0.18); }
+  to { box-shadow: 0 0 24px rgba(241, 183, 32, 0.42); }
+}
+
+@media (max-width: 720px) {
+  .reward-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reward-obligation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reward-obligation-card {
+    padding: 0.9rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reward-obligation-card {
+    animation: none;
+  }
+}
+
+.reward-obligation-overdue {
+  border-color: #dc4a4a;
+  background: #fff8f8;
+  box-shadow: 0 0 22px rgba(220, 74, 74, 0.25);
+}
+
+.reward-obligation-overdue .reward-obligation-topline span {
+  color: #c92f2f;
+}
+
+/* Context-aware task cancellation/deletion confirmations */
+.action-confirm-modal {
+  width: min(92vw, 560px);
+  max-height: min(88vh, 720px);
+  overflow: auto;
+  padding: 1.15rem;
+  border: 1px solid #dfe6ef;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(20, 32, 52, 0.24);
+}
+
+.action-confirm-modal h2 {
+  margin: 0.3rem 0 0.25rem;
+  font-size: 1.45rem;
+}
+
+.action-task-name {
+  display: block;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.action-confirm-copy {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0;
+  padding: 0.85rem;
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+
+.action-confirm-copy p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.action-confirm-buttons {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.action-confirm-buttons .button {
+  width: 100%;
+  justify-content: center;
+}
+
+.danger-button {
+  background: #cc3030;
+  border-color: #cc3030;
+}
+
+.danger-button:hover {
+  background: #b62626;
+  border-color: #b62626;
+}
+
+.danger-outline-button {
+  color: #b42323;
+  border-color: #e4aaaa;
+}

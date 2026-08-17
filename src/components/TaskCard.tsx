@@ -18,6 +18,7 @@ interface TaskCardProps {
   onReassign: (task: Task, assignedTo: TaskAssignee) => void;
   onPostpone: (task: Task, dueDate: string) => void;
   onCancelTask: (task: Task) => void;
+  onStopRecurrence: (task: Task) => void;
   onDelete: (task: Task) => void;
 }
 
@@ -79,6 +80,7 @@ export function TaskCard({
   onReassign,
   onPostpone,
   onCancelTask,
+  onStopRecurrence,
   onDelete,
 }: TaskCardProps) {
   const overdue = isTaskOverdue(task);
@@ -195,6 +197,14 @@ export function TaskCard({
                   <button type="button" onClick={() => setShowPostpone(true)}>
                     Posponer…
                   </button>
+                  {task.recurrence.type !== "none" && (
+                    <button
+                      type="button"
+                      onClick={() => runAndClose(() => onStopRecurrence(task))}
+                    >
+                      Detener recurrencia
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="menu-warning"
