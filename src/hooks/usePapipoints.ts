@@ -317,7 +317,10 @@ const getOverdueDayKeys = (task: Task, now = new Date()): string[] => {
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const keys: string[] = [];
   while (cursor.getTime() <= end.getTime()) {
-    keys.push(toLocalDateKey(cursor));
+    const key = toLocalDateKey(cursor);
+    if (!task.overduePenaltyStartDate || key >= task.overduePenaltyStartDate) {
+      keys.push(key);
+    }
     cursor.setDate(cursor.getDate() + 1);
   }
   return keys;

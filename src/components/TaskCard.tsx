@@ -4,7 +4,7 @@ import {
   formatDueDate,
   formatDuration,
   formatWeekdayRecurrence,
-  getNextDueDate,
+  getNextRecurrenceOccurrence,
   isTaskOverdue,
   toDateInputValue,
 } from "../utils/taskDates";
@@ -16,6 +16,7 @@ interface TaskCardProps {
   onEdit: (task: Task) => void;
   onDuplicate: (task: Task) => void;
   onReassign: (task: Task, assignedTo: TaskAssignee) => void;
+  onTransfer: (task: Task, assignedTo: Exclude<TaskAssignee, "Ambos">) => void;
   onPostpone: (task: Task, dueDate: string) => void;
   onCancelTask: (task: Task) => void;
   onStopRecurrence: (task: Task) => void;
@@ -44,6 +45,10 @@ const formatRecurrence = (task: Task): string => {
   if (type === "weekly") label = amount === 1 ? "Cada semana" : `Cada ${amount} semanas`;
   if (type === "weekdays") label = formatWeekdayRecurrence(task.recurrence.weekdays);
   if (type === "monthly") label = amount === 1 ? "Cada mes" : `Cada ${amount} meses`;
+  const occurrencesPerDay = Math.max(1, task.recurrence.occurrencesPerDay || 1);
+  if (label && occurrencesPerDay > 1) {
+    label += ` · ${occurrencesPerDay} veces/día`;
+  }
   if (label && endDate) {
     const end = new Date(`${endDate}T12:00:00`);
     label += ` hasta ${new Intl.DateTimeFormat("es-DO", {
@@ -63,11 +68,12 @@ const isFinalRecurrence = (task: Task): boolean => {
     return false;
   }
   return (
-    getNextDueDate(
+    getNextRecurrenceOccurrence(
       task.dueDate,
       task.recurrence,
+      task.recurrenceOccurrenceIndex || 1,
       new Date().toISOString(),
-    ) > task.recurrence.endDate
+    ).dueDate > task.recurrence.endDate
   );
 };
 
@@ -78,6 +84,7 @@ export function TaskCard({
   onEdit,
   onDuplicate,
   onReassign,
+  onTransfer,
   onPostpone,
   onCancelTask,
   onStopRecurrence,
@@ -125,6 +132,12 @@ export function TaskCard({
           {task.recurrence.type !== "none" && (
             <span className="recurrence-label">↻ {formatRecurrence(task)}</span>
           )}
+          {task.recurrence.type !== "none" &&
+            (task.recurrence.occurrencesPerDay || 1) > 1 && (
+              <span className="occurrence-count-label">
+                {task.recurrenceOccurrenceIndex || 1} de {task.recurrence.occurrencesPerDay}
+              </span>
+            )}
           {isFinalRecurrence(task) && (
             <span className="last-recurrence-label">Última repetición</span>
           )}
@@ -176,14 +189,14 @@ export function TaskCard({
                           type="button"
                           onClick={() =>
                             runAndClose(() =>
-                              onReassign(
+                              onTransfer(
                                 task,
                                 task.assignedTo === "Yorki" ? "Yisel" : "Yorki",
                               ),
                             )
                           }
                         >
-                          Asignar a {task.assignedTo === "Yorki" ? "Yisel" : "Yorki"}
+                          Transferir a {task.assignedTo === "Yorki" ? "Yisel" : "Yorki"}
                         </button>
                         <button
                           type="button"

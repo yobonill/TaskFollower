@@ -7,8 +7,12 @@ import type {
   PapipointsTransaction,
 } from "../models/gamification";
 import {
+  COMPLETION_POINTS,
+  EARLY_COMPLETION_BONUS,
   getLevelFromPapipoints,
   MAX_LEVEL,
+  OVERDUE_PENALTY,
+  TASK_CREATION_POINTS,
 } from "../utils/papipoints";
 import type { RedeemResult } from "../hooks/usePapipoints";
 
@@ -59,6 +63,35 @@ const emptyRewardForm = {
   name: "",
   description: "",
 };
+
+const priorityRuleRows = [
+  { key: "low" as const, label: "Baja" },
+  { key: "normal" as const, label: "Normal" },
+  { key: "high" as const, label: "Alta" },
+  { key: "critical" as const, label: "Crítica" },
+];
+
+function RewardPricingGuide({ cost }: { cost: number }) {
+  const safeCost = Math.max(1, Math.floor(cost || 1));
+  const normalTasks = Math.ceil(safeCost / COMPLETION_POINTS.normal);
+  const overdueTransfer = Math.max(1, Math.ceil(safeCost * 0.1));
+
+  return (
+    <div className="reward-pricing-guide">
+      <strong>{safeCost} PP ≈ {normalTasks} {normalTasks === 1 ? "tarea normal" : "tareas normales"}</strong>
+      <div className="reward-equivalence-grid">
+        {priorityRuleRows.map(({ key, label }) => (
+          <span key={key}>
+            {label}: ≈ {Math.ceil(safeCost / COMPLETION_POINTS[key])}
+          </span>
+        ))}
+      </div>
+      <small>
+        Si la recompensa se vence, transferirá hasta <b>{overdueTransfer} PP por día</b> del proveedor al solicitante.
+      </small>
+    </div>
+  );
+}
 
 export function LevelProgress({ profile }: { profile: PapipointsProfile }) {
   const maximum = profile.level >= MAX_LEVEL;
@@ -114,6 +147,7 @@ export function PapipointsPanel({
   const [configDays, setConfigDays] = useState("2");
   const [saving, setSaving] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [showRules, setShowRules] = useState(false);
 
   const currentProfile = profiles[currentUser.name];
   const partner = getOtherAppUser(currentUser.name);
@@ -237,6 +271,17 @@ export function PapipointsPanel({
     const cost = Math.max(1, Math.floor(Number(configCost) || 0));
     const days = Math.max(1, Math.floor(Number(configDays) || 0));
     if (!cost || !days) return;
+
+    const overdueTransfer = Math.max(1, Math.ceil(cost * 0.1));
+    const normalTaskEquivalent = Math.ceil(cost / COMPLETION_POINTS.normal);
+    if (
+      !window.confirm(
+        `Configurar recompensa “${reward.name}”\n\nCosto: ${cost} Papipuntos\nTiempo para entregarla: ${days} ${days === 1 ? "día" : "días"}\nEquivale aproximadamente a ${normalTaskEquivalent} ${normalTaskEquivalent === 1 ? "tarea normal" : "tareas normales"}.\nSi se vence: hasta ${overdueTransfer} Papipuntos transferidos por cada día de atraso.\n\n¿Guardar estas condiciones?`,
+      )
+    ) {
+      return;
+    }
+
     await onConfigureReward(reward.id, cost, days);
     setConfiguringId(null);
     onMessage(`Recompensa configurada: ${cost} Papipuntos y ${days} ${days === 1 ? "día" : "días"} para entregarla.`);
@@ -312,6 +357,77 @@ export function PapipointsPanel({
         <LevelProgress profile={profiles.Yisel} />
       </div>
 
+      <section className="papipoints-rules-card">
+        <button
+          className="papipoints-rules-toggle"
+          type="button"
+          aria-expanded={showRules}
+          onClick={() => setShowRules((current) => !current)}
+        >
+          <span>
+            <strong>ⓘ ¿Cómo funcionan los Papipuntos?</strong>
+            <small>Consulta cuánto ganas, cuánto pierdes y cómo valorar una recompensa.</small>
+          </span>
+          <b>{showRules ? "−" : "+"}</b>
+        </button>
+
+        {showRules && (
+          <div className="papipoints-rules-content">
+            <div className="papipoints-rule-section rule-positive">
+              <h3>Ganar Papipuntos</h3>
+              <div className="papipoints-rule-table">
+                <div className="rule-table-header">
+                  <span>Prioridad</span><span>Completar</span><span>Antes de tiempo</span><span>Máx. manual</span>
+                </div>
+                {priorityRuleRows.map(({ key, label }) => (
+                  <div className="rule-table-row" key={key}>
+                    <strong>{label}</strong>
+                    <span>+{COMPLETION_POINTS[key]}</span>
+                    <span>+{EARLY_COMPLETION_BONUS[key]}</span>
+                    <b>
+                      +{COMPLETION_POINTS[key] + EARLY_COMPLETION_BONUS[key] + TASK_CREATION_POINTS}
+                    </b>
+                  </div>
+                ))}
+              </div>
+              <small>
+                Una tarea manual elegible suma +{TASK_CREATION_POINTS} PP adicionales al completarse. Las tareas compartidas otorgan el resultado correspondiente a ambos usuarios.
+              </small>
+            </div>
+
+            <div className="papipoints-rule-section rule-negative">
+              <h3>Perder Papipuntos</h3>
+              <div className="papipoints-rule-table compact-rule-table">
+                <div className="rule-table-header"><span>Prioridad</span><span>Vencida por día</span></div>
+                {priorityRuleRows.map(({ key, label }) => (
+                  <div className="rule-table-row" key={key}>
+                    <strong>{label}</strong>
+                    <b>−{OVERDUE_PENALTY[key]} PP/día</b>
+                  </div>
+                ))}
+              </div>
+              <small>
+                Una tarea que ya recibió penalizaciones por vencimiento no otorga Papipuntos al completarse. Si se pospone y vuelve a vencerse, puede acumular nuevas penalizaciones.
+              </small>
+              <small>
+                En recompensas vencidas, cada día transfiere hasta el 10% del costo original desde quien debe entregarla hacia quien la solicitó.
+              </small>
+            </div>
+
+            <div className="papipoints-rule-section reward-value-reference">
+              <h3>Referencia para valorar recompensas</h3>
+              <div className="reward-value-bands">
+                <span><b>50–100 PP</b><small>Pequeña · ≈ 5–10 tareas normales</small></span>
+                <span><b>150–250 PP</b><small>Mediana · ≈ 15–25 tareas normales</small></span>
+                <span><b>300–500 PP</b><small>Importante · ≈ 30–50 tareas normales</small></span>
+                <span><b>500+ PP</b><small>Especial</small></span>
+              </div>
+              <small>Son referencias, no límites. El costo real lo decide la persona que tendrá que entregar la recompensa.</small>
+            </div>
+          </div>
+        )}
+      </section>
+
       {pendingForMe.length > 0 && (
         <section className="task-list-panel reward-pending-panel">
           <div className="list-heading">
@@ -339,6 +455,7 @@ export function PapipointsPanel({
                       <span>Días para entregarla</span>
                       <input type="number" min="1" max="365" inputMode="numeric" value={configDays} onChange={(e) => setConfigDays(e.target.value)} />
                     </label>
+                    <RewardPricingGuide cost={Number(configCost) || 1} />
                     <div className="reward-actions">
                       <button className="button button-primary" type="button" onClick={() => void configure(reward)}>Guardar configuración</button>
                       <button className="button button-quiet" type="button" onClick={() => setConfiguringId(null)}>Volver</button>
@@ -479,6 +596,7 @@ export function PapipointsPanel({
                   <div className="reward-config-grid">
                     <label className="field"><span>Costo</span><input type="number" min="1" value={configCost} onChange={(e) => setConfigCost(e.target.value)} /></label>
                     <label className="field"><span>Días</span><input type="number" min="1" max="365" value={configDays} onChange={(e) => setConfigDays(e.target.value)} /></label>
+                    <RewardPricingGuide cost={Number(configCost) || 1} />
                     <div className="reward-actions"><button className="button button-primary" type="button" onClick={() => void configure(reward)}>Guardar</button><button className="button button-quiet" type="button" onClick={() => setConfiguringId(null)}>Volver</button></div>
                   </div>
                 )}

@@ -98,6 +98,13 @@ const normalizeTemplate = (
         recurrenceType === "weekdays"
           ? normalizeWeekdays(value.recurrence?.weekdays)
           : undefined,
+      occurrencesPerDay:
+        recurrenceType !== "none"
+          ? Math.min(
+              20,
+              Math.max(1, Math.floor(Number(value.recurrence?.occurrencesPerDay) || 1)),
+            )
+          : undefined,
       endDate:
         dueDate &&
         recurrenceType !== "none" &&

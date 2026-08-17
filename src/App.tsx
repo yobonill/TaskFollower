@@ -32,7 +32,7 @@ import {
 import {
   formatDueDate,
   formatDuration,
-  getNextDueDate,
+  getNextRecurrenceOccurrence,
   getTaskDate,
   isTaskDueToday,
   isTaskOverdue,
@@ -71,7 +71,8 @@ interface PointsFeedbackState {
 type TaskActionDialog =
   | { kind: "cancel"; task: Task }
   | { kind: "delete"; task: Task }
-  | { kind: "stop-recurrence"; task: Task };
+  | { kind: "stop-recurrence"; task: Task }
+  | { kind: "transfer"; task: Task; target: UserName };
 
 const priorityLabels: Record<TaskPriority, string> = {
   low: "Baja",
@@ -558,8 +559,15 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       cancelledAt: undefined,
       cancelledBy: undefined,
       cancelledByUserId: undefined,
+      recurrence:
+        task.recurrence.type === "none"
+          ? task.recurrence
+          : { ...task.recurrence, defaultAssignedTo: task.isPrivate ? currentUser.name : task.assignedTo },
       recurrenceSeriesId:
         task.recurrence.type === "none" ? undefined : crypto.randomUUID(),
+      recurrenceOccurrenceIndex:
+        task.recurrence.type === "none" ? undefined : 1,
+      overduePenaltyStartDate: undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -575,16 +583,106 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       return;
     }
 
+    const wasOverdue = isTaskOverdue(task);
+    if (wasOverdue) {
+      const changes = await applyOverduePenalty(task, true);
+      showPointsChangesFeedback(changes, `Tarea vencida antes de cambiar responsables: ${task.name}`);
+    }
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const nextPenaltyStartDate = [
+      tomorrow.getFullYear(),
+      String(tomorrow.getMonth() + 1).padStart(2, "0"),
+      String(tomorrow.getDate()).padStart(2, "0"),
+    ].join("-");
+
     await saveTask({
       ...task,
       assignedTo,
       assignedToUserId:
         assignedTo === "Ambos" ? undefined : getAssigneeUserIds(assignedTo)[0],
       assignedToUserIds: getAssigneeUserIds(assignedTo),
+      recurrence:
+        task.recurrence.type === "none"
+          ? task.recurrence
+          : { ...task.recurrence, defaultAssignedTo: assignedTo },
+      overduePenaltyStartDate: wasOverdue
+        ? nextPenaltyStartDate
+        : task.overduePenaltyStartDate,
       lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
-    showToast({ message: `Tarea asignada a ${assignedTo}.` }, 3200);
+    showToast({
+      message: wasOverdue
+        ? `Responsabilidad cambiada a ${assignedTo}. Primero se aplicaron las penalizaciones acumuladas al responsable anterior; los nuevos días de atraso corresponderán a ${assignedTo}.`
+        : `Tarea asignada a ${assignedTo}.`,
+    }, wasOverdue ? 5600 : 3200);
+  };
+
+  const handleTransfer = (task: Task, target: UserName) => {
+    if (task.isPrivate) {
+      showToast({
+        message: "Las tareas privadas no pueden transferirse. Cámbiala a visibilidad normal primero.",
+      }, 4200);
+      return;
+    }
+    setTaskActionDialog({ kind: "transfer", task, target });
+  };
+
+  const executeTransferTask = async (
+    task: Task,
+    target: UserName,
+    includeFutureOccurrences: boolean,
+  ) => {
+    setTaskActionDialog(null);
+
+    const wasOverdue = isTaskOverdue(task);
+    let overdueChanges: PapipointsChange[] = [];
+    if (wasOverdue) {
+      overdueChanges = await applyOverduePenalty(task, true);
+      showPointsChangesFeedback(overdueChanges, `Tarea vencida antes de transferir: ${task.name}`);
+    }
+
+    const targetIds = getAssigneeUserIds(target);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const nextPenaltyStartDate = [
+      tomorrow.getFullYear(),
+      String(tomorrow.getMonth() + 1).padStart(2, "0"),
+      String(tomorrow.getDate()).padStart(2, "0"),
+    ].join("-");
+
+    await saveTask({
+      ...task,
+      assignedTo: target,
+      assignedToUserId: targetIds[0],
+      assignedToUserIds: targetIds,
+      recurrence:
+        task.recurrence.type === "none"
+          ? task.recurrence
+          : {
+              ...task.recurrence,
+              defaultAssignedTo: includeFutureOccurrences
+                ? target
+                : task.recurrence.defaultAssignedTo || task.assignedTo,
+            },
+      overduePenaltyStartDate: wasOverdue
+        ? nextPenaltyStartDate
+        : task.overduePenaltyStartDate,
+      lastModifiedByUserId: currentUser.uid,
+      updatedAt: new Date().toISOString(),
+    });
+
+    showToast({
+      message: wasOverdue
+        ? `Tarea transferida a ${target}. Se aplicaron primero las penalizaciones acumuladas al responsable anterior. Esta ocurrencia ya no otorgará Papipuntos al completarse; nuevos días de atraso se descontarán a ${target}.`
+        : task.recurrence.type !== "none" && includeFutureOccurrences
+          ? `Tarea transferida a ${target}. ${target} también será responsable de las próximas ocurrencias.`
+          : task.recurrence.type !== "none"
+            ? `Solo esta ocurrencia fue transferida a ${target}. Las próximas volverán a ${task.recurrence.defaultAssignedTo || task.assignedTo}.`
+            : `Tarea transferida a ${target}.`,
+    }, 6200);
   };
 
   const handlePostpone = async (task: Task, dueDate: string) => {
@@ -596,6 +694,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     await saveTask({
       ...task,
       dueDate,
+      overduePenaltyStartDate: undefined,
       status: "pending",
       cancelledAt: undefined,
       cancelledBy: undefined,
@@ -613,19 +712,39 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const detachRecurrence = (task: Task): Task => ({
     ...task,
     recurrence: { type: "none", interval: 1 },
+    recurrenceOccurrenceIndex: undefined,
   });
 
   const createNextRecurringOccurrence = async (task: Task): Promise<string | undefined> => {
     if (task.recurrence.type === "none" || !task.dueDate) return undefined;
     const timestamp = new Date().toISOString();
-    const nextDueDate = getNextDueDate(task.dueDate, task.recurrence, timestamp);
-    if (task.recurrence.endDate && nextDueDate > task.recurrence.endDate) return undefined;
+    const nextOccurrence = getNextRecurrenceOccurrence(
+      task.dueDate,
+      task.recurrence,
+      task.recurrenceOccurrenceIndex || 1,
+      timestamp,
+    );
+    if (
+      task.recurrence.endDate &&
+      nextOccurrence.dueDate > task.recurrence.endDate
+    ) {
+      return undefined;
+    }
 
+    const nextAssignedTo =
+      task.recurrence.defaultAssignedTo || task.assignedTo;
+    const nextAssigneeIds = getAssigneeUserIds(nextAssignedTo);
     const nextTaskId = crypto.randomUUID();
     await saveTask({
       ...task,
       id: nextTaskId,
-      dueDate: nextDueDate,
+      dueDate: nextOccurrence.dueDate,
+      assignedTo: nextAssignedTo,
+      assignedToUserId:
+        nextAssignedTo === "Ambos" ? undefined : nextAssigneeIds[0],
+      assignedToUserIds: nextAssigneeIds,
+      recurrenceOccurrenceIndex: nextOccurrence.occurrenceIndex,
+      overduePenaltyStartDate: undefined,
       status: "pending",
       source: "recurrence",
       recurrenceSeriesId: task.recurrenceSeriesId || task.id,
@@ -794,6 +913,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     await saveTask({
       ...task,
       recurrence: { type: "none", interval: 1 },
+      recurrenceOccurrenceIndex: undefined,
       lastModifiedByUserId: currentUser.uid,
       updatedAt: new Date().toISOString(),
     });
@@ -832,7 +952,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -939,6 +1059,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             onEdit={openEditForm}
             onDuplicate={(item) => void handleDuplicate(item)}
             onReassign={(item, user) => void handleReassign(item, user)}
+            onTransfer={(item, user) => handleTransfer(item, user)}
             onPostpone={(item, dueDate) => void handlePostpone(item, dueDate)}
             onCancelTask={(item) => handleCancelTask(item)}
             onStopRecurrence={(item) => handleStopRecurrence(item)}
@@ -1038,9 +1159,23 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       0,
       Math.round((todayStart.getTime() - dueStart.getTime()) / 86_400_000),
     );
-    const overdueDays = task.dueTime
+    let overdueDays = task.dueTime
       ? Math.max(1, calendarDifference + 1)
       : Math.max(1, calendarDifference);
+
+    if (task.overduePenaltyStartDate) {
+      const start = new Date(`${task.overduePenaltyStartDate}T12:00:00`);
+      const startDifference = Math.max(
+        0,
+        Math.round((todayStart.getTime() - start.getTime()) / 86_400_000) + 1,
+      );
+      overdueDays = Math.min(overdueDays, startDifference);
+    }
+
+    if (overdueDays <= 0) {
+      return "La tarea sigue vencida, pero no hay nuevos días de penalización acumulados desde el último cambio de responsable.";
+    }
+
     const dailyPenalty = OVERDUE_PENALTY[task.priority];
     const maximumPenalty = overdueDays * dailyPenalty;
 
@@ -1078,6 +1213,27 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 ? `${penaltyText} Detener la recurrencia por sí sola no aplica ni elimina esa penalización.`
                 : "Detener la recurrencia no modifica los Papipuntos de la tarea actual.",
             ],
+          };
+        }
+
+        if (taskActionDialog.kind === "transfer") {
+          const target = taskActionDialog.target;
+          return {
+            title: recurring ? "Transferir tarea recurrente" : "Transferir tarea",
+            paragraphs: recurring
+              ? [
+                  penaltyText,
+                  penaltyText
+                    ? `Primero se resolverán las penalizaciones acumuladas para ${task.assignedTo}. Después, ${target} será responsable de los nuevos días de atraso de esta ocurrencia. Como ya estuvo vencida, esta ocurrencia no otorgará Papipuntos al completarse.`
+                    : `${target} pasará a ser responsable de completar esta ocurrencia y recibirá sus Papipuntos si continúa siendo elegible.`,
+                  `Puedes transferir solo esta ocurrencia y mantener las próximas asignadas a ${task.recurrence.defaultAssignedTo || task.assignedTo}, o transferir también la responsabilidad de las próximas ocurrencias a ${target}.`,
+                ].filter(Boolean)
+              : [
+                  penaltyText,
+                  penaltyText
+                    ? `Primero se resolverán las penalizaciones acumuladas para ${task.assignedTo}. Después, ${target} será responsable de los nuevos días de atraso. Esta tarea ya no otorgará Papipuntos al completarse.`
+                    : `${target} pasará a ser responsable de completar esta tarea y recibirá sus Papipuntos si continúa siendo elegible.`,
+                ].filter(Boolean),
           };
         }
 
@@ -1759,6 +1915,23 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 <button className="button button-primary" type="button" onClick={() => void executeStopRecurrence(taskActionDialog.task)}>
                   Detener recurrencia
                 </button>
+              )}
+
+              {taskActionDialog.kind === "transfer" && taskActionDialog.task.recurrence.type === "none" && (
+                <button className="button button-primary" type="button" onClick={() => void executeTransferTask(taskActionDialog.task, taskActionDialog.target, false)}>
+                  Transferir a {taskActionDialog.target}
+                </button>
+              )}
+
+              {taskActionDialog.kind === "transfer" && taskActionDialog.task.recurrence.type !== "none" && (
+                <>
+                  <button className="button button-primary" type="button" onClick={() => void executeTransferTask(taskActionDialog.task, taskActionDialog.target, false)}>
+                    Solo esta ocurrencia
+                  </button>
+                  <button className="button button-secondary" type="button" onClick={() => void executeTransferTask(taskActionDialog.task, taskActionDialog.target, true)}>
+                    Esta y las próximas
+                  </button>
+                </>
               )}
 
               {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type === "none" && (

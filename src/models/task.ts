@@ -19,6 +19,10 @@ export interface TaskRecurrence {
   interval: number;
   /** Days used by the weekday recurrence mode. 1 = Monday, 7 = Sunday. */
   weekdays?: WeekdayNumber[];
+  /** Number of sequential occurrences generated on each scheduled day. */
+  occurrencesPerDay?: number;
+  /** Default assignee for future occurrences in this recurring series. */
+  defaultAssignedTo?: TaskAssignee;
   /** Last due date that may be generated for the recurring series. */
   endDate?: string;
 }
@@ -47,6 +51,10 @@ export interface Task {
   status: TaskStatus;
   recurrence: TaskRecurrence;
   recurrenceSeriesId?: string;
+  /** 1-based occurrence within the scheduled day (for example 2 of 3). */
+  recurrenceOccurrenceIndex?: number;
+  /** Earliest overdue calendar day that may be charged after responsibility changes. */
+  overduePenaltyStartDate?: string;
   source?: TaskSource;
   createdAt: string;
   updatedAt: string;
@@ -59,7 +67,7 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 5;
+  schemaVersion: 6;
   exportedAt: string;
   tasks: Task[];
 }

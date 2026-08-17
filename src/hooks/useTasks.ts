@@ -24,7 +24,7 @@ import type {
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
-import { getNextDueDate, normalizeWeekdays } from "../utils/taskDates";
+import { getNextRecurrenceOccurrence, normalizeWeekdays } from "../utils/taskDates";
 import { getAssigneeUserIds } from "../utils/taskAssignment";
 
 const CACHE_PREFIX = "taskFollower.tasks.v2";
@@ -147,6 +147,18 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
         recurrenceType === "weekdays"
           ? normalizeWeekdays(recurrence.weekdays)
           : undefined,
+      occurrencesPerDay:
+        recurrenceType !== "none"
+          ? Math.min(20, Math.max(1, Math.floor(Number(recurrence.occurrencesPerDay) || 1)))
+          : undefined,
+      defaultAssignedTo:
+        recurrenceType !== "none"
+          ? requestedPrivate
+            ? assignedTo
+            : isTaskAssignee(recurrence.defaultAssignedTo)
+              ? recurrence.defaultAssignedTo
+              : assignedTo
+          : undefined,
       endDate:
         dueDate &&
         recurrenceType !== "none" &&
@@ -158,6 +170,13 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     recurrenceSeriesId:
       dueDate && recurrenceType !== "none"
         ? task.recurrenceSeriesId
+        : undefined,
+    recurrenceOccurrenceIndex:
+      dueDate && recurrenceType !== "none"
+        ? Math.min(
+            Math.min(20, Math.max(1, Math.floor(Number(recurrence.occurrencesPerDay) || 1))),
+            Math.max(1, Math.floor(Number(task.recurrenceOccurrenceIndex) || 1)),
+          )
         : undefined,
     source: task.source || "migration",
     createdAt,
@@ -624,21 +643,30 @@ export const useTasks = (
 
       let generatedTaskId: string | undefined;
       if (originalTask.recurrence.type !== "none" && originalTask.dueDate) {
-        const nextDueDate = getNextDueDate(
+        const nextOccurrence = getNextRecurrenceOccurrence(
           originalTask.dueDate,
           originalTask.recurrence,
+          originalTask.recurrenceOccurrenceIndex || 1,
           timestamp,
         );
         const mayCreateNext =
           !originalTask.recurrence.endDate ||
-          nextDueDate <= originalTask.recurrence.endDate;
+          nextOccurrence.dueDate <= originalTask.recurrence.endDate;
 
         if (mayCreateNext) {
           generatedTaskId = crypto.randomUUID();
+          const nextAssignedTo =
+            originalTask.recurrence.defaultAssignedTo || originalTask.assignedTo;
+          const nextAssigneeIds = getAssigneeUserIds(nextAssignedTo);
           const nextTask: Task = {
             ...originalTask,
             id: generatedTaskId,
-            dueDate: nextDueDate,
+            dueDate: nextOccurrence.dueDate,
+            assignedTo: nextAssignedTo,
+            assignedToUserId:
+              nextAssignedTo === "Ambos" ? undefined : nextAssigneeIds[0],
+            assignedToUserIds: nextAssigneeIds,
+            recurrenceOccurrenceIndex: nextOccurrence.occurrenceIndex,
             status: "pending",
             source: "recurrence",
             completedAt: undefined,

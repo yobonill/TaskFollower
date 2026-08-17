@@ -52,6 +52,7 @@ interface FormState {
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
   recurrenceWeekdays: WeekdayNumber[];
+  recurrenceOccurrencesPerDay: string;
   recurrenceEndDate: string;
 }
 
@@ -118,6 +119,7 @@ const createInitialState = (defaultUser: UserName): FormState => {
     recurrenceType: "none",
     recurrenceInterval: "1",
     recurrenceWeekdays: [],
+    recurrenceOccurrencesPerDay: "1",
     recurrenceEndDate: "",
   };
 };
@@ -167,6 +169,11 @@ const readDraft = (
           ? parsed.recurrenceType
           : "none",
       recurrenceWeekdays: normalizeWeekdays(parsed.recurrenceWeekdays),
+      recurrenceOccurrencesPerDay:
+        parsed.recurrenceOccurrencesPerDay &&
+        Number(parsed.recurrenceOccurrencesPerDay) > 0
+          ? String(Math.min(20, Math.max(1, Math.floor(Number(parsed.recurrenceOccurrencesPerDay)))))
+          : "1",
     };
   } catch {
     return null;
@@ -256,6 +263,9 @@ export function TaskForm({
       recurrenceType: editingTask.recurrence.type,
       recurrenceInterval: String(editingTask.recurrence.interval),
       recurrenceWeekdays: normalizeWeekdays(editingTask.recurrence.weekdays),
+      recurrenceOccurrencesPerDay: String(
+        Math.min(20, Math.max(1, editingTask.recurrence.occurrencesPerDay || 1)),
+      ),
       recurrenceEndDate: editingTask.recurrence.endDate || "",
     });
   }, [currentUser.uid, defaultUser, draftKey, editingTask]);
@@ -306,6 +316,8 @@ export function TaskForm({
         recurrenceType: type,
         recurrenceInterval: type === "weekdays" ? "1" : current.recurrenceInterval,
         recurrenceWeekdays: selectedWeekdays,
+        recurrenceOccurrencesPerDay:
+          type === "none" ? "1" : current.recurrenceOccurrencesPerDay || "1",
       };
     });
   };
@@ -345,6 +357,9 @@ export function TaskForm({
       recurrenceType,
       recurrenceInterval: String(Math.max(1, template.recurrence.interval || 1)),
       recurrenceWeekdays: normalizeWeekdays(template.recurrence.weekdays),
+      recurrenceOccurrencesPerDay: String(
+        Math.min(20, Math.max(1, template.recurrence.occurrencesPerDay || 1)),
+      ),
       recurrenceEndDate:
         dueDate && recurrenceType !== "none"
           ? template.recurrence.endDate || ""
@@ -376,6 +391,21 @@ export function TaskForm({
       weekdays:
         recurrenceType === "weekdays"
           ? normalizeWeekdays(form.recurrenceWeekdays)
+          : undefined,
+      occurrencesPerDay:
+        recurrenceType !== "none"
+          ? Math.min(
+              20,
+              Math.max(1, Math.floor(Number(form.recurrenceOccurrencesPerDay) || 1)),
+            )
+          : undefined,
+      defaultAssignedTo:
+        recurrenceType !== "none"
+          ? editingTask &&
+            editingTask.assignedTo === assignedTo &&
+            editingTask.recurrence.defaultAssignedTo
+            ? editingTask.recurrence.defaultAssignedTo
+            : assignedTo
           : undefined,
       endDate:
         form.dueDate && recurrenceType !== "none" && form.recurrenceEndDate
@@ -414,6 +444,10 @@ export function TaskForm({
         !effectiveDueDate || recurrenceType === "none"
           ? undefined
           : editingTask?.recurrenceSeriesId || editingTask?.id || crypto.randomUUID(),
+      recurrenceOccurrenceIndex:
+        !effectiveDueDate || recurrenceType === "none"
+          ? undefined
+          : editingTask?.recurrenceOccurrenceIndex || 1,
       source: editingTask?.source || "manual",
       createdAt: editingTask?.createdAt || timestamp,
       updatedAt: timestamp,
@@ -449,6 +483,7 @@ export function TaskForm({
         recurrenceType: "none",
         recurrenceInterval: "1",
         recurrenceWeekdays: [],
+        recurrenceOccurrencesPerDay: "1",
         recurrenceEndDate: "",
       };
       setForm(nextState);
@@ -638,6 +673,7 @@ export function TaskForm({
               update("dueTime", "");
               update("recurrenceType", "none");
               update("recurrenceWeekdays", []);
+              update("recurrenceOccurrencesPerDay", "1");
               update("recurrenceEndDate", "");
               setShowCustomDate(false);
             }}
@@ -677,6 +713,7 @@ export function TaskForm({
                 update("dueTime", "");
                 update("recurrenceType", "none");
                 update("recurrenceWeekdays", []);
+                update("recurrenceOccurrencesPerDay", "1");
                 update("recurrenceEndDate", "");
               }
             }}
@@ -904,6 +941,25 @@ export function TaskForm({
                   </small>
                 ) : null}
               </div>
+            )}
+
+            {form.recurrenceType !== "none" && (
+              <label className="field">
+                <span>Veces por día</span>
+                <input
+                  min="1"
+                  max="20"
+                  inputMode="numeric"
+                  type="number"
+                  value={form.recurrenceOccurrencesPerDay}
+                  onChange={(event) =>
+                    update("recurrenceOccurrencesPerDay", event.target.value)
+                  }
+                />
+                <small>
+                  Las ocurrencias se crean una por una. Ej.: 3 = 1 de 3, 2 de 3 y 3 de 3.
+                </small>
+              </label>
             )}
 
             <label className="field">

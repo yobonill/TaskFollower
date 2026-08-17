@@ -247,6 +247,82 @@ export const getNextDueDate = (
   return toDateInputValue(next);
 };
 
+
+export interface NextRecurrenceOccurrence {
+  dueDate: string;
+  occurrenceIndex: number;
+}
+
+/**
+ * Calculates the next active occurrence for a recurring task while preserving
+ * the "one active occurrence at a time" model.
+ *
+ * Multiple occurrences on the same scheduled day are created sequentially.
+ * If an old occurrence is completed late, historical missed occurrences are
+ * never generated. Daily and selected-weekday schedules may resume later on
+ * the completion day; other schedules advance to their next valid date.
+ */
+export const getNextRecurrenceOccurrence = (
+  currentDueDate: string,
+  recurrence: TaskRecurrence,
+  currentOccurrenceIndex = 1,
+  completedAt?: string,
+): NextRecurrenceOccurrence => {
+  const occurrencesPerDay = Math.max(
+    1,
+    Math.floor(Number(recurrence.occurrencesPerDay) || 1),
+  );
+  const occurrenceIndex = Math.min(
+    occurrencesPerDay,
+    Math.max(1, Math.floor(Number(currentOccurrenceIndex) || 1)),
+  );
+  const completed = parseDateLike(completedAt);
+  const completedDateKey = completed ? toDateInputValue(completed) : currentDueDate;
+
+  // On-time/early completion: finish all occurrences for the scheduled day
+  // before advancing to the next scheduled date.
+  if (completedDateKey <= currentDueDate) {
+    if (occurrenceIndex < occurrencesPerDay) {
+      return {
+        dueDate: currentDueDate,
+        occurrenceIndex: occurrenceIndex + 1,
+      };
+    }
+
+    return {
+      dueDate: getNextDueDate(currentDueDate, recurrence, completedAt),
+      occurrenceIndex: 1,
+    };
+  }
+
+  // Late completion: never generate missed historical occurrences. For daily
+  // tasks (every day) or a selected weekday that includes today, the overdue
+  // occurrence counts as the first execution handled today and the series may
+  // continue with occurrence 2 today.
+  const completedWeekday = completed
+    ? jsDayToWeekdayNumber(completed.getDay())
+    : undefined;
+  const canResumeToday =
+    occurrencesPerDay > 1 &&
+    ((recurrence.type === "daily" &&
+      Math.max(1, recurrence.interval || 1) === 1) ||
+      (recurrence.type === "weekdays" &&
+        completedWeekday !== undefined &&
+        normalizeWeekdays(recurrence.weekdays).includes(completedWeekday)));
+
+  if (canResumeToday) {
+    return {
+      dueDate: completedDateKey,
+      occurrenceIndex: 2,
+    };
+  }
+
+  return {
+    dueDate: getNextDueDate(currentDueDate, recurrence, completedAt),
+    occurrenceIndex: 1,
+  };
+};
+
 export const formatWeekdayRecurrence = (weekdays?: readonly number[]): string => {
   const normalized = normalizeWeekdays(weekdays);
   if (!normalized.length) return "Días de la semana";

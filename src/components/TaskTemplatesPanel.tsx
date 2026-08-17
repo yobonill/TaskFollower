@@ -43,6 +43,7 @@ interface TemplateFormState {
   recurrenceType: RecurrenceType;
   recurrenceInterval: string;
   recurrenceWeekdays: WeekdayNumber[];
+  recurrenceOccurrencesPerDay: string;
   recurrenceEndDate: string;
 }
 
@@ -58,6 +59,7 @@ const createEmptyForm = (defaultAssignee: TaskAssignee): TemplateFormState => ({
   recurrenceType: "none",
   recurrenceInterval: "1",
   recurrenceWeekdays: [],
+  recurrenceOccurrencesPerDay: "1",
   recurrenceEndDate: "",
 });
 
@@ -95,6 +97,9 @@ export function TaskTemplatesPanel({
       recurrenceType: template.dueDate ? template.recurrence.type : "none",
       recurrenceInterval: String(Math.max(1, template.recurrence.interval || 1)),
       recurrenceWeekdays: normalizeWeekdays(template.recurrence.weekdays),
+      recurrenceOccurrencesPerDay: String(
+        Math.min(20, Math.max(1, template.recurrence.occurrencesPerDay || 1)),
+      ),
       recurrenceEndDate: template.recurrence.endDate || "",
     });
   };
@@ -124,6 +129,8 @@ export function TaskTemplatesPanel({
         recurrenceType: type,
         recurrenceInterval: type === "weekdays" ? "1" : current.recurrenceInterval,
         recurrenceWeekdays: selectedWeekdays,
+        recurrenceOccurrencesPerDay:
+          type === "none" ? "1" : current.recurrenceOccurrencesPerDay || "1",
       };
     });
   };
@@ -191,6 +198,13 @@ export function TaskTemplatesPanel({
         weekdays:
           recurrenceType === "weekdays"
             ? normalizeWeekdays(form.recurrenceWeekdays)
+            : undefined,
+        occurrencesPerDay:
+          recurrenceType !== "none"
+            ? Math.min(
+                20,
+                Math.max(1, Math.floor(Number(form.recurrenceOccurrencesPerDay) || 1)),
+              )
             : undefined,
         endDate:
           requestedDueDate && recurrenceType !== "none" && form.recurrenceEndDate
@@ -266,6 +280,10 @@ export function TaskTemplatesPanel({
                       : template.recurrence.type !== "none"
                         ? " · Recurrente"
                         : ""}
+                    {template.recurrence.type !== "none" &&
+                    (template.recurrence.occurrencesPerDay || 1) > 1
+                      ? ` · ${template.recurrence.occurrencesPerDay} veces/día`
+                      : ""}
                   </span>
                 </div>
                 <div className="row-actions">
@@ -499,6 +517,23 @@ export function TaskTemplatesPanel({
                   </small>
                 ) : null}
               </div>
+            )}
+
+            {form.recurrenceType !== "none" && (
+              <label className="field">
+                <span>Veces por día</span>
+                <input
+                  min="1"
+                  max="20"
+                  inputMode="numeric"
+                  type="number"
+                  value={form.recurrenceOccurrencesPerDay}
+                  onChange={(event) =>
+                    update("recurrenceOccurrencesPerDay", event.target.value)
+                  }
+                />
+                <small>Las ocurrencias se crearán una por una durante cada día programado.</small>
+              </label>
             )}
 
             <label className="field">
