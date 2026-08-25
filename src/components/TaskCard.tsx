@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Task, TaskAssignee, TaskPriority } from "../models/task";
+import type { Task, TaskAssignee, TaskPriority, UserName } from "../models/task";
 import {
   formatDueDate,
   formatDuration,
@@ -8,9 +8,11 @@ import {
   isTaskOverdue,
   toDateInputValue,
 } from "../utils/taskDates";
+import { getPenaltyTaskAccruedPoints } from "../utils/papipoints";
 
 interface TaskCardProps {
   task: Task;
+  currentUserName: UserName;
   featured?: boolean;
   onComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
@@ -79,6 +81,7 @@ const isFinalRecurrence = (task: Task): boolean => {
 
 export function TaskCard({
   task,
+  currentUserName,
   featured = false,
   onComplete,
   onEdit,
@@ -90,12 +93,21 @@ export function TaskCard({
   onStopRecurrence,
   onDelete,
 }: TaskCardProps) {
-  const overdue = isTaskOverdue(task);
+  const isPenalty = (task.taskType || "normal") === "penalty";
+  const overdue = !isPenalty && isTaskOverdue(task);
   const priority = task.priority || "normal";
   const [menuOpen, setMenuOpen] = useState(false);
   const [showPostpone, setShowPostpone] = useState(false);
   const [customDate, setCustomDate] = useState(task.dueDate || "");
+  const [clock, setClock] = useState(() => Date.now());
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isPenalty) return;
+    setClock(Date.now());
+    const interval = window.setInterval(() => setClock(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, [isPenalty]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -115,17 +127,34 @@ export function TaskCard({
     setShowPostpone(false);
   };
 
+  const penaltyStartedAt = new Date(task.penaltyStartedAt || task.createdAt).getTime();
+  const graceMinutes = Math.max(1, task.penaltyGraceMinutes || 60);
+  const graceEndsAt = penaltyStartedAt + graceMinutes * 60_000;
+  const penaltyPoints = isPenalty
+    ? getPenaltyTaskAccruedPoints(task, new Date(clock))
+    : 0;
+  const penaltyHours = isPenalty && (task.penaltyPointsPerHour || 5) > 0
+    ? penaltyPoints / (task.penaltyPointsPerHour || 5)
+    : 0;
+  const nextPenaltyAt = graceEndsAt + penaltyHours * 3_600_000;
+  const minutesUntilNextPenalty = Math.max(0, Math.ceil((nextPenaltyAt - clock) / 60_000));
+  const canCancelPenalty = isPenalty && task.assignedTo !== currentUserName;
+
   return (
     <article
-      className={`task-card priority-${priority} ${featured ? "task-card-featured" : ""}`}
+      className={`task-card priority-${priority} ${isPenalty ? "task-card-penalty" : ""} ${featured ? "task-card-featured" : ""}`}
     >
       <div className="task-card-header">
         <div className="task-card-topline">
           {featured && <span className="next-label">Siguiente</span>}
-          <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
-          {task.isPrivate ? (
+          {isPenalty ? (
+            <span className="penalty-task-label">🔴 PENALIZACIÓN</span>
+          ) : (
+            <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
+          )}
+          {!isPenalty && task.isPrivate ? (
             <span className="private-task-label">🔒 Privada</span>
-          ) : task.assignedTo === "Ambos" ? (
+          ) : !isPenalty && task.assignedTo === "Ambos" ? (
             <span className="shared-task-label">👥 Compartida</span>
           ) : null}
           {overdue && <span className="overdue-label">Vencida</span>}
@@ -160,6 +189,25 @@ export function TaskCard({
           {menuOpen && (
             <div className="task-menu" role="menu">
               {!showPostpone ? (
+                isPenalty ? (
+                  <>
+                    <button type="button" onClick={() => runAndClose(() => onEdit(task))}>
+                      Editar detalles
+                    </button>
+                    {canCancelPenalty && (
+                      <button
+                        type="button"
+                        className="menu-warning"
+                        onClick={() => runAndClose(() => onCancelTask(task))}
+                      >
+                        Cancelar penalización
+                      </button>
+                    )}
+                    {!canCancelPenalty && (
+                      <span className="penalty-menu-note">Solo la otra persona puede cancelarla.</span>
+                    )}
+                  </>
+                ) : (
                 <>
                   <button type="button" onClick={() => runAndClose(() => onEdit(task))}>
                     Editar
@@ -233,6 +281,7 @@ export function TaskCard({
                     Eliminar
                   </button>
                 </>
+                )
               ) : (
                 <div className="postpone-menu">
                   <button
@@ -277,19 +326,36 @@ export function TaskCard({
       <h2>{task.name}</h2>
       {task.description && <p className="task-description">{task.description}</p>}
 
-      <div className="task-compact-meta">
-        <strong>{formatDueDate(task)}</strong>
-        <span>·</span>
-        <span>{formatDuration(task.estimatedMinutes)}</span>
-        <span>·</span>
-        <span>{task.isUnassigned ? "Sin asignar" : task.assignedTo}</span>
-      </div>
+      {isPenalty ? (
+        <div className="penalty-task-status">
+          <strong>Asignada a {task.assignedTo}</strong>
+          {penaltyPoints > 0 ? (
+            <>
+              <span className="penalty-points-live">−{penaltyPoints} PP acumulados</span>
+              <small>Próxima penalización de −{task.penaltyPointsPerHour || 5} PP en aprox. {minutesUntilNextPenalty} min.</small>
+            </>
+          ) : (
+            <>
+              <span>Período de gracia activo</span>
+              <small>{minutesUntilNextPenalty} min antes de comenzar a descontar Papipuntos.</small>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="task-compact-meta">
+          <strong>{formatDueDate(task)}</strong>
+          <span>·</span>
+          <span>{formatDuration(task.estimatedMinutes)}</span>
+          <span>·</span>
+          <span>{task.isUnassigned ? "Sin asignar" : task.assignedTo}</span>
+        </div>
+      )}
 
       <button
-        className="button button-primary complete-button"
+        className={`button button-primary complete-button ${isPenalty ? "resolve-penalty-button" : ""}`}
         onClick={() => onComplete(task)}
       >
-        ✓ Completar
+        {isPenalty ? "✓ Resolver" : "✓ Completar"}
       </button>
     </article>
   );

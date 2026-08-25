@@ -24,7 +24,11 @@ import type {
 } from "../models/task";
 import { createDemoTasks } from "../services/demoTasks";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
-import { getNextRecurrenceOccurrence, normalizeWeekdays } from "../utils/taskDates";
+import {
+  getNextRecurrenceOccurrence,
+  getRecoveredRecurrenceOccurrence,
+  normalizeWeekdays,
+} from "../utils/taskDates";
 import { getAssigneeUserIds } from "../utils/taskAssignment";
 
 const CACHE_PREFIX = "taskFollower.tasks.v2";
@@ -76,11 +80,13 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     (isUserName(task.assignedBy) ? task.assignedBy : undefined) ||
     (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
     "Yorki";
+  const taskType = task.taskType === "penalty" ? "penalty" : "normal";
 
   const isIncomplete =
     !(typeof task.name === "string" && task.name.trim()) ||
-    !(task.priority || legacyUrgency);
-  const requestedPrivate = task.isPrivate === true && !isIncomplete;
+    (taskType === "normal" && !(task.priority || legacyUrgency));
+  const requestedPrivate =
+    taskType === "normal" && task.isPrivate === true && !isIncomplete;
   const privateOwnerUserId = requestedPrivate
     ? task.privateOwnerUserId ||
       task.createdByUserId ||
@@ -106,9 +112,15 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
       assignedBy;
   }
 
+  if (taskType === "penalty" && assignedTo === "Ambos") {
+    assignedTo = assignedBy === "Yorki" ? "Yisel" : "Yorki";
+  }
+
   const assignedToUserIds = getAssigneeUserIds(assignedTo);
   const dueDate =
-    typeof task.dueDate === "string" && task.dueDate.trim()
+    taskType === "normal" &&
+    typeof task.dueDate === "string" &&
+    task.dueDate.trim()
       ? task.dueDate
       : undefined;
   const recurrence = task.recurrence || { type: "none" as const, interval: 1 };
@@ -120,15 +132,17 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
   return {
     ...taskWithoutLegacyUrgency,
     id: task.id,
+    taskType,
     name: typeof task.name === "string" ? task.name : "",
     description: task.description || "",
     estimatedMinutes:
-      Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
+      taskType === "normal" && Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
         ? Math.max(1, estimatedMinutes)
         : undefined,
     dueDate,
     dueTime: dueDate && task.dueTime ? task.dueTime : undefined,
-    priority: task.priority || legacyUrgency || undefined,
+    priority:
+      taskType === "normal" ? task.priority || legacyUrgency || undefined : undefined,
     assignedBy,
     assignedTo,
     createdByUserId:
@@ -174,6 +188,16 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     recurrenceSeriesId:
       dueDate && recurrenceType !== "none"
         ? task.recurrenceSeriesId
+        : undefined,
+    penaltyStartedAt:
+      taskType === "penalty" ? task.penaltyStartedAt || createdAt : undefined,
+    penaltyGraceMinutes:
+      taskType === "penalty"
+        ? Math.max(1, Math.floor(Number(task.penaltyGraceMinutes) || 60))
+        : undefined,
+    penaltyPointsPerHour:
+      taskType === "penalty"
+        ? Math.max(1, Math.floor(Number(task.penaltyPointsPerHour) || 5))
         : undefined,
     recurrenceOccurrenceIndex:
       dueDate && recurrenceType !== "none"
@@ -378,8 +402,10 @@ const needsIdentityMigration = (task: Partial<Task>): boolean => {
     return true;
   }
 
+  const taskType = task.taskType === "penalty" ? "penalty" : "normal";
   const incomplete =
-    !(typeof task.name === "string" && task.name.trim()) || !task.priority;
+    !(typeof task.name === "string" && task.name.trim()) ||
+    (taskType === "normal" && !task.priority);
   if (incomplete) {
     if (task.isUnassigned !== true) return true;
     if (currentIds.length || task.assignedToUserId) return true;
@@ -402,6 +428,7 @@ export interface UseTasksResult {
   completeTask: (
     task: Task,
     completedBy: AppUserDefinition,
+    options?: { completedAt?: string; recoverRecurrence?: boolean },
   ) => Promise<CompletedTaskUndo>;
   undoComplete: (undo: CompletedTaskUndo) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -636,31 +663,41 @@ export const useTasks = (
     async (
       task: Task,
       completedBy: AppUserDefinition,
+      options?: { completedAt?: string; recoverRecurrence?: boolean },
     ): Promise<CompletedTaskUndo> => {
-      const timestamp = new Date().toISOString();
+      const registeredAt = new Date().toISOString();
+      const completedAt = options?.completedAt || registeredAt;
       const originalTask = normalizeTaskForUser(task, currentUser);
       const completedTask: Task = {
         ...originalTask,
         status: "done",
-        completedAt: timestamp,
+        completedAt,
         completedBy: completedBy.name,
         completedByUserId: completedBy.uid,
         cancelledAt: undefined,
         cancelledBy: undefined,
         cancelledByUserId: undefined,
         lastModifiedByUserId: completedBy.uid,
-        updatedAt: timestamp,
+        updatedAt: registeredAt,
       };
       await saveTask(completedTask);
 
       let generatedTaskId: string | undefined;
       if (originalTask.recurrence.type !== "none" && originalTask.dueDate) {
-        const nextOccurrence = getNextRecurrenceOccurrence(
-          originalTask.dueDate,
-          originalTask.recurrence,
-          originalTask.recurrenceOccurrenceIndex || 1,
-          timestamp,
-        );
+        const nextOccurrence = options?.recoverRecurrence
+          ? getRecoveredRecurrenceOccurrence(
+              originalTask.dueDate,
+              originalTask.recurrence,
+              originalTask.recurrenceOccurrenceIndex || 1,
+              completedAt,
+              registeredAt,
+            )
+          : getNextRecurrenceOccurrence(
+              originalTask.dueDate,
+              originalTask.recurrence,
+              originalTask.recurrenceOccurrenceIndex || 1,
+              completedAt,
+            );
         const mayCreateNext =
           !originalTask.recurrence.endDate ||
           nextOccurrence.dueDate <= originalTask.recurrence.endDate;
@@ -690,8 +727,8 @@ export const useTasks = (
             cancelledByUserId: undefined,
             lastModifiedByUserId: completedBy.uid,
             recurrenceSeriesId: originalTask.recurrenceSeriesId || originalTask.id,
-            createdAt: timestamp,
-            updatedAt: timestamp,
+            createdAt: registeredAt,
+            updatedAt: registeredAt,
           };
           await saveTask(nextTask);
         }

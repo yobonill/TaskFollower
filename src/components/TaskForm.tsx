@@ -5,13 +5,18 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { getAppUserByName, type AppUserDefinition } from "../config/appUsers";
+import {
+  getAppUserByName,
+  getOtherAppUser,
+  type AppUserDefinition,
+} from "../config/appUsers";
 import {
   USERS,
   type RecurrenceType,
   type Task,
   type TaskAssignee,
   type TaskPriority,
+  type TaskType,
   type UserName,
   type WeekdayNumber,
 } from "../models/task";
@@ -41,6 +46,7 @@ interface TaskFormProps {
 }
 
 interface FormState {
+  taskType: TaskType;
   name: string;
   description: string;
   estimatedMinutes: string;
@@ -103,6 +109,7 @@ const readSavedDefaults = (): SavedDefaults => {
 const createInitialState = (defaultUser: UserName): FormState => {
   const defaults = readSavedDefaults();
   return {
+    taskType: "normal",
     name: "",
     description: "",
     estimatedMinutes: defaults.estimatedMinutes || "15",
@@ -144,6 +151,7 @@ const readDraft = (
     return {
       ...fallback,
       ...parsed,
+      taskType: parsed.taskType === "penalty" ? "penalty" : "normal",
       priority:
         parsed.priority === "low" ||
         parsed.priority === "normal" ||
@@ -191,6 +199,7 @@ export function TaskForm({
   onCancel,
 }: TaskFormProps) {
   const defaultUser = currentUser.name;
+  const otherUser = getOtherAppUser(currentUser.name);
   const draftKey = getTaskFormDraftKey(currentUser.uid);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<FormState>(() =>
@@ -215,10 +224,11 @@ export function TaskForm({
   const missingFields = useMemo(
     () =>
       getMissingRequiredFields({
+        taskType: form.taskType,
         name: form.name,
         priority: form.priority || undefined,
       }),
-    [form.name, form.priority],
+    [form.name, form.priority, form.taskType],
   );
 
   useEffect(() => {
@@ -258,6 +268,7 @@ export function TaskForm({
     setDraftRecovered(false);
     setShowAdvanced(true);
     setForm({
+      taskType: editingTask.taskType === "penalty" ? "penalty" : "normal",
       name: editingTask.name,
       description: editingTask.description,
       estimatedMinutes: editingTask.estimatedMinutes ? String(editingTask.estimatedMinutes) : "",
@@ -355,6 +366,7 @@ export function TaskForm({
     const dueDate = template.dueDate || "";
     const recurrenceType = dueDate ? template.recurrence.type : "none";
     setForm({
+      taskType: "normal",
       name: template.name,
       description: template.description || "",
       estimatedMinutes: template.estimatedMinutes
@@ -388,10 +400,18 @@ export function TaskForm({
 
   const buildTask = (): Task => {
     const timestamp = new Date().toISOString();
+    const taskType: TaskType = editingTask?.taskType === "penalty" || (!editingTask && form.taskType === "penalty")
+      ? "penalty"
+      : "normal";
+    const isPenalty = taskType === "penalty";
     const isIncomplete = missingFields.length > 0;
-    const isPrivate = !isIncomplete && form.isPrivate;
-    const assignedTo: TaskAssignee = isPrivate ? currentUser.name : form.assignedTo;
-    const recurrenceType: RecurrenceType = form.dueDate
+    const isPrivate = !isPenalty && !isIncomplete && form.isPrivate;
+    const assignedTo: TaskAssignee = isPenalty
+      ? editingTask?.assignedTo || form.assignedTo
+      : isPrivate
+        ? currentUser.name
+        : form.assignedTo;
+    const recurrenceType: RecurrenceType = !isPenalty && form.dueDate
       ? form.recurrenceType
       : "none";
     const recurrence = {
@@ -424,21 +444,22 @@ export function TaskForm({
           ? form.recurrenceEndDate
           : undefined,
     };
-    const effectiveDueDate = form.dueDate
+    const effectiveDueDate = !isPenalty && form.dueDate
       ? getRecurrenceStartDate(form.dueDate, recurrence)
       : undefined;
 
     return {
       id: editingTask?.id || crypto.randomUUID(),
+      taskType,
       name: form.name.trim(),
       description: form.description.trim(),
       estimatedMinutes:
-        form.estimatedMinutes.trim() && Number(form.estimatedMinutes) > 0
+        !isPenalty && form.estimatedMinutes.trim() && Number(form.estimatedMinutes) > 0
           ? Math.max(1, Number(form.estimatedMinutes))
           : undefined,
       dueDate: effectiveDueDate,
       dueTime: effectiveDueDate && form.dueTime ? form.dueTime : undefined,
-      priority: form.priority || undefined,
+      priority: isPenalty ? undefined : form.priority || undefined,
       assignedBy: editingTask?.assignedBy || currentUser.name,
       assignedTo,
       createdByUserId: editingTask?.createdByUserId || currentUser.uid,
@@ -461,6 +482,11 @@ export function TaskForm({
         !effectiveDueDate || recurrenceType === "none"
           ? undefined
           : editingTask?.recurrenceOccurrenceIndex || 1,
+      penaltyStartedAt: isPenalty
+        ? editingTask?.penaltyStartedAt || editingTask?.createdAt || timestamp
+        : undefined,
+      penaltyGraceMinutes: isPenalty ? editingTask?.penaltyGraceMinutes || 60 : undefined,
+      penaltyPointsPerHour: isPenalty ? editingTask?.penaltyPointsPerHour || 5 : undefined,
       source: editingTask?.source || "manual",
       createdAt: editingTask?.createdAt || timestamp,
       updatedAt: timestamp,
@@ -475,13 +501,15 @@ export function TaskForm({
 
   const finishSuccessfulSave = (createAnother: boolean) => {
     localStorage.removeItem(draftKey);
-    localStorage.setItem(
-      DEFAULTS_KEY,
-      JSON.stringify({
-        estimatedMinutes: form.estimatedMinutes,
-        assignedTo: form.assignedTo,
-      } satisfies SavedDefaults),
-    );
+    if (form.taskType === "normal") {
+      localStorage.setItem(
+        DEFAULTS_KEY,
+        JSON.stringify({
+          estimatedMinutes: form.estimatedMinutes,
+          assignedTo: form.assignedTo,
+        } satisfies SavedDefaults),
+      );
+    }
 
     if (createAnother) {
       const nextState: FormState = {
@@ -491,7 +519,7 @@ export function TaskForm({
         dueDate: "",
         dueTime: "",
         priority: "",
-        assignedTo: defaultUser,
+        assignedTo: form.taskType === "penalty" ? otherUser.name : defaultUser,
         isPrivate: false,
         recurrenceType: "none",
         recurrenceInterval: "1",
@@ -502,7 +530,11 @@ export function TaskForm({
       setForm(nextState);
       localStorage.setItem(draftKey, JSON.stringify(nextState));
       setDraftRecovered(false);
-      setFormMessage("Tarea guardada. Puedes registrar otra.");
+      setFormMessage(
+        form.taskType === "penalty"
+          ? "Penalización guardada. Puedes registrar otra."
+          : "Tarea guardada. Puedes registrar otra.",
+      );
       window.setTimeout(() => nameInputRef.current?.focus(), 0);
     }
   };
@@ -518,7 +550,14 @@ export function TaskForm({
   };
 
   const save = async (createAnother: boolean) => {
+    if (form.taskType === "penalty" && !form.name.trim()) {
+      setFormMessage("Escribe el nombre de la penalización antes de guardarla.");
+      nameInputRef.current?.focus();
+      return;
+    }
+
     if (
+      form.taskType === "normal" &&
       form.dueDate &&
       form.recurrenceType === "weekdays" &&
       form.recurrenceWeekdays.length === 0
@@ -529,6 +568,7 @@ export function TaskForm({
     }
 
     if (
+      form.taskType === "normal" &&
       form.recurrenceEndDate &&
       weekdayAdjustedDueDate &&
       form.recurrenceEndDate < weekdayAdjustedDueDate
@@ -541,7 +581,12 @@ export function TaskForm({
     }
 
     const task = buildTask();
-    if (!editingTask && !skipSimilarityCheck && task.name.trim()) {
+    if (
+      task.taskType !== "penalty" &&
+      !editingTask &&
+      !skipSimilarityCheck &&
+      task.name.trim()
+    ) {
       const similarTasks = findSimilarTasks(task);
       if (similarTasks.length) {
         localStorage.setItem(draftKey, JSON.stringify(form));
@@ -570,7 +615,15 @@ export function TaskForm({
       <div className="form-heading">
         <div>
           <span className="eyebrow">{editingTask ? "Editar" : "Registro rápido"}</span>
-          <h2>{editingTask ? "Editar tarea" : "Nueva tarea"}</h2>
+          <h2>
+            {editingTask
+              ? editingTask.taskType === "penalty"
+                ? "Editar penalización"
+                : "Editar tarea"
+              : form.taskType === "penalty"
+                ? "Nueva penalización"
+                : "Nueva tarea"}
+          </h2>
         </div>
         <button
           type="button"
@@ -590,6 +643,56 @@ export function TaskForm({
       )}
 
       {!editingTask && (
+        <fieldset className="quick-group task-type-selector">
+          <legend>Tipo</legend>
+          <div className="segmented-options two-options">
+            <button
+              type="button"
+              className={form.taskType === "normal" ? "selected" : ""}
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  taskType: "normal",
+                  assignedTo: current.assignedTo === "Ambos" ? currentUser.name : current.assignedTo,
+                }))
+              }
+            >
+              Tarea normal
+            </button>
+            <button
+              type="button"
+              className={form.taskType === "penalty" ? "selected penalty-type-selected" : ""}
+              onClick={() => {
+                setShowAdvanced(false);
+                setForm((current) => ({
+                  ...current,
+                  taskType: "penalty",
+                  assignedTo: otherUser.name,
+                  isPrivate: false,
+                  estimatedMinutes: "",
+                  dueDate: "",
+                  dueTime: "",
+                  priority: "",
+                  recurrenceType: "none",
+                  recurrenceInterval: "1",
+                  recurrenceWeekdays: [],
+                  recurrenceOccurrencesPerDay: "1",
+                  recurrenceEndDate: "",
+                }));
+              }}
+            >
+              🔴 Penalización
+            </button>
+          </div>
+          {form.taskType === "penalty" && (
+            <small className="penalty-form-note">
+              La primera hora no descuenta puntos. Después se descuentan 5 Papipuntos por cada hora iniciada hasta resolverla.
+            </small>
+          )}
+        </fieldset>
+      )}
+
+      {!editingTask && form.taskType === "normal" && (
         <div className="template-section">
           <span className="quick-label">Usar plantilla</span>
           <div className="chip-scroll" aria-label="Plantillas de tareas">
@@ -608,17 +711,18 @@ export function TaskForm({
       )}
 
       <label className="field field-wide task-name-field">
-        <span>Nombre de la tarea <strong className="required-mark">Requerido</strong></span>
+        <span>{form.taskType === "penalty" ? "Motivo de la penalización" : "Nombre de la tarea"} <strong className="required-mark">Requerido</strong></span>
         <input
           ref={nameInputRef}
           autoFocus
           value={form.name}
           onChange={(event) => update("name", event.target.value)}
-          placeholder="¿Qué necesitas terminar?"
+          placeholder={form.taskType === "penalty" ? "Ej.: Ropa dejada en la cama" : "¿Qué necesitas terminar?"}
           enterKeyHint="done"
         />
       </label>
 
+      {form.taskType === "normal" && (
       <fieldset className="quick-group">
         <legend>Visibilidad</legend>
         <div className="segmented-options two-options">
@@ -651,10 +755,30 @@ export function TaskForm({
           </small>
         ) : null}
       </fieldset>
+      )}
 
       <fieldset className="quick-group">
-        <legend>Asignada a</legend>
-        {missingFields.length > 0 ? (
+        <legend>{form.taskType === "penalty" ? "Penalización para" : "Asignada a"}</legend>
+        {form.taskType === "penalty" ? (
+          editingTask ? (
+            <div className="private-assignee-summary penalty-assignee-summary">
+              🔴 {editingTask.assignedTo} · la persona asignada no puede transferir ni cancelar esta penalización
+            </div>
+          ) : (
+            <div className="segmented-options two-options">
+              {[otherUser.name, currentUser.name].map((user) => (
+                <button
+                  key={user}
+                  type="button"
+                  className={form.assignedTo === user ? "selected" : ""}
+                  onClick={() => update("assignedTo", user)}
+                >
+                  {user}{user === otherUser.name ? " · recomendado" : " · yo"}
+                </button>
+              ))}
+            </div>
+          )
+        ) : missingFields.length > 0 ? (
           <div className="private-assignee-summary">
             Sin asignar · visible para ambos hasta completar nombre y prioridad
           </div>
@@ -684,6 +808,28 @@ export function TaskForm({
           : `Será creada por ${currentUser.name}`}
       </p>
 
+      {form.taskType === "penalty" && (
+        <>
+          <label className="field field-wide penalty-description-field">
+            <span>Descripción (opcional)</span>
+            <textarea
+              rows={3}
+              value={form.description}
+              onChange={(event) => update("description", event.target.value)}
+              placeholder="Explica qué debe corregirse o dejarse en su lugar"
+            />
+          </label>
+          <div className="penalty-rules-preview">
+            <strong>Cómo funciona</strong>
+            <span>0 PP durante la primera hora.</span>
+            <span>Después: −5 PP por cada hora iniciada hasta resolverla.</span>
+            <span>Solo {form.assignedTo === "Ambos" ? otherUser.name : form.assignedTo === currentUser.name ? otherUser.name : currentUser.name} podrá cancelarla.</span>
+          </div>
+        </>
+      )}
+
+      {form.taskType === "normal" && (
+      <>
       <fieldset className="quick-group">
         <legend>Fecha límite</legend>
         <div className="chip-grid date-presets">
@@ -998,12 +1144,15 @@ export function TaskForm({
           </div>
         </div>
       )}
+      </>
+      )}
 
-      {missingFields.length > 0 && (
+      {form.taskType === "normal" && missingFields.length > 0 && (
         <div className="incomplete-form-notice" role="status">
           <strong>La tarea se guardará como incompleta.</strong>
           <span>
             Faltan: {formatMissingRequiredFields({
+              taskType: form.taskType,
               name: form.name,
               priority: form.priority || undefined,
             })}. No aparecerá en el panel hasta completar esos datos.
@@ -1083,7 +1232,11 @@ export function TaskForm({
             disabled={savingAction !== null}
             onClick={() => void save(true)}
           >
-            {savingAction === "another" ? "Guardando…" : "Guardar y crear otra"}
+            {savingAction === "another"
+              ? "Guardando…"
+              : form.taskType === "penalty"
+                ? "Guardar y crear otra"
+                : "Guardar y crear otra"}
           </button>
         )}
         <button type="submit" className="button button-primary" disabled={savingAction !== null}>
@@ -1091,9 +1244,11 @@ export function TaskForm({
             ? "Guardando…"
             : editingTask
               ? "Guardar cambios"
-              : missingFields.length
-                ? "Guardar incompleta"
-                : "Guardar tarea"}
+              : form.taskType === "penalty"
+                ? "Crear penalización"
+                : missingFields.length
+                  ? "Guardar incompleta"
+                  : "Guardar tarea"}
         </button>
       </div>
     </form>

@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -36,12 +37,17 @@ import {
   getTaskDate,
   isTaskDueToday,
   isTaskOverdue,
+  isTaskOverdueAt,
   sortPendingTasks,
 } from "./utils/taskDates";
 import {
+  COMPLETION_POINTS,
+  EARLY_COMPLETION_BONUS,
   getLevelFromPapipoints,
+  getPenaltyTaskAccruedPoints,
   isCompletedEarly,
   OVERDUE_PENALTY,
+  TASK_CREATION_POINTS,
 } from "./utils/papipoints";
 import { findSimilarOpenTasks } from "./utils/taskSimilarity";
 import { getAssigneeUserIds, isTaskAssignedTo } from "./utils/taskAssignment";
@@ -73,6 +79,13 @@ type TaskActionDialog =
   | { kind: "delete"; task: Task }
   | { kind: "stop-recurrence"; task: Task }
   | { kind: "transfer"; task: Task; target: UserName };
+
+interface CompletionDialogState {
+  task: Task;
+  stage: "choice" | "past";
+  date: string;
+  time: string;
+}
 
 const priorityLabels: Record<TaskPriority, string> = {
   low: "Baja",
@@ -130,6 +143,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     awardTaskCompletion,
     removeTaskCompletionRewards,
     applyOverduePenalty,
+    settlePenaltyTask,
     hasTaskOverduePenalty,
     saveReward,
     configureReward,
@@ -166,12 +180,40 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [pointsFeedback, setPointsFeedback] = useState<PointsFeedbackState | null>(null);
   const [taskActionDialog, setTaskActionDialog] = useState<TaskActionDialog | null>(null);
+  const [completionDialog, setCompletionDialog] = useState<CompletionDialogState | null>(null);
   const [installBannerHidden, setInstallBannerHidden] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
   const pointsTimerRef = useRef<number | null>(null);
 
   const totalPendingCount = taskPendingCount + papipointsPendingCount + templatesPendingCount;
+
+  useEffect(() => {
+    const settlePenaltyTasks = () => {
+      for (const task of tasks) {
+        if ((task.taskType || "normal") !== "penalty") continue;
+
+        if (task.status === "pending") {
+          void settlePenaltyTask(task);
+          continue;
+        }
+
+        // Reconcile closed penalty tasks too. This makes a backdated resolution
+        // converge correctly across both devices even if the other device
+        // briefly materialized a later hourly penalty before it received the
+        // task-status update.
+        if (task.status === "done" && task.completedAt) {
+          void settlePenaltyTask(task, task.completedAt, true);
+        } else if (task.status === "cancelled" && task.cancelledAt) {
+          void settlePenaltyTask(task, task.cancelledAt, true);
+        }
+      }
+    };
+
+    settlePenaltyTasks();
+    const interval = window.setInterval(settlePenaltyTasks, 60_000);
+    return () => window.clearInterval(interval);
+  }, [settlePenaltyTask, tasks]);
 
   const showToast = useCallback((nextToast: ToastState, duration = 9000) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -263,6 +305,14 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       ),
     [filteredTasks],
   );
+  const penaltyTasks = useMemo(
+    () => pendingTasks.filter((task) => (task.taskType || "normal") === "penalty"),
+    [pendingTasks],
+  );
+  const normalPendingTasks = useMemo(
+    () => pendingTasks.filter((task) => (task.taskType || "normal") !== "penalty"),
+    [pendingTasks],
+  );
 
   const incompleteTasks = useMemo(
     () =>
@@ -302,27 +352,27 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   );
 
   const overdueTasks = useMemo(
-    () => pendingTasks.filter(isTaskOverdue),
-    [pendingTasks],
+    () => normalPendingTasks.filter(isTaskOverdue),
+    [normalPendingTasks],
   );
   const dueTodayTasks = useMemo(
-    () => pendingTasks.filter(isTaskDueToday),
-    [pendingTasks],
+    () => normalPendingTasks.filter(isTaskDueToday),
+    [normalPendingTasks],
   );
   const undatedTasks = useMemo(
-    () => pendingTasks.filter((task) => !task.dueDate),
-    [pendingTasks],
+    () => normalPendingTasks.filter((task) => !task.dueDate),
+    [normalPendingTasks],
   );
   const todaySectionTasks = useMemo(
-    () => pendingTasks.filter((task) => isTaskOverdue(task) || isTaskDueToday(task)),
-    [pendingTasks],
+    () => normalPendingTasks.filter((task) => isTaskOverdue(task) || isTaskDueToday(task)),
+    [normalPendingTasks],
   );
   const upcomingTasks = useMemo(
     () =>
-      pendingTasks.filter(
+      normalPendingTasks.filter(
         (task) => task.dueDate && !isTaskOverdue(task) && !isTaskDueToday(task),
       ),
-    [pendingTasks],
+    [normalPendingTasks],
   );
   const similarReviewTasks = useMemo(
     () =>
@@ -345,10 +395,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   }, [dashboardFilter, dueTodayTasks, overdueTasks, pendingTasks, similarReviewTasks, undatedTasks]);
   const workloadTasks = useMemo(
     () =>
-      pendingTasks.filter(
+      normalPendingTasks.filter(
         (task) => isTaskOverdue(task) || isTaskDueToday(task),
       ),
-    [pendingTasks],
+    [normalPendingTasks],
   );
   const workloadMinutes = sumEstimatedMinutes(workloadTasks);
   const overdueMinutes = sumEstimatedMinutes(overdueTasks);
@@ -400,7 +450,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         message: complete
           ? wasEditing
             ? "Cambios guardados."
-            : "Tarea guardada."
+            : (task.taskType || "normal") === "penalty"
+              ? "Penalización creada."
+              : "Tarea guardada."
           : `Tarea guardada como incompleta. Faltan: ${formatMissingRequiredFields(task)}.`,
       },
       complete ? 3200 : 6500,
@@ -463,19 +515,43 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     setShowForm(true);
   };
 
-  const handleComplete = async (task: Task) => {
-    const completedAt = new Date().toISOString();
-    const wasOverdue = isTaskOverdue(task);
-    const hadPreviousPenalty = hasTaskOverduePenalty(task.id);
-    const undo = await completeTask(task, currentUser);
+  const executeTaskCompletion = async (
+    task: Task,
+    completedAt: string,
+    recoverRecurrence = false,
+  ) => {
+    setCompletionDialog(null);
+    const isPenaltyTask = (task.taskType || "normal") === "penalty";
+    const wasOverdueAtCompletion = !isPenaltyTask && isTaskOverdueAt(task, completedAt);
+    const hadPreviousPenalty = !isPenaltyTask && hasTaskOverduePenalty(task.id);
+    const undo = await completeTask(task, currentUser, {
+      completedAt,
+      recoverRecurrence,
+    });
     const pointChanges = await awardTaskCompletion(task, completedAt, currentUser);
+
+    if (isPenaltyTask) {
+      showPointsChangesFeedback(pointChanges, `Penalización resuelta: ${task.name}`);
+      const finalPenaltyPoints = getPenaltyTaskAccruedPoints(task, completedAt);
+      const restored = pointChanges
+        .filter((change) => change.amount > 0)
+        .reduce((total, change) => total + change.amount, 0);
+      showToast({
+        message: restored > 0
+          ? `Penalización resuelta usando la hora real. Se corrigieron ${restored} Papipuntos que se habían descontado después de esa hora. La penalización final fue de ${finalPenaltyPoints} Papipuntos.`
+          : finalPenaltyPoints > 0
+            ? `Penalización resuelta. La penalización total fue de ${finalPenaltyPoints} Papipuntos según el tiempo transcurrido.`
+            : "Penalización resuelta dentro de la primera hora. No se ganaron ni perdieron Papipuntos.",
+      }, 5600);
+      return;
+    }
 
     const positiveChanges = pointChanges.filter((change) => change.amount > 0);
     const negativeChanges = pointChanges.filter((change) => change.amount < 0);
     const hasPenaltyHistory = hadPreviousPenalty || hasTaskOverduePenalty(task.id);
     const early = Boolean(
       positiveChanges.length &&
-        !wasOverdue &&
+        !wasOverdueAtCompletion &&
         task.priority &&
         isCompletedEarly(task, completedAt),
     );
@@ -486,7 +562,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         ? "Penalización acumulada por vencimiento"
         : early
           ? "Tarea completada antes de tiempo"
-          : "Tarea completada",
+          : recoverRecurrence
+            ? "Finalización anterior registrada"
+            : "Tarea completada",
     );
 
     const totalPositive = positiveChanges.reduce(
@@ -494,10 +572,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       0,
     );
 
-    let message = "Tarea completada.";
+    let message = recoverRecurrence
+      ? "Finalización anterior registrada usando la fecha y hora indicadas."
+      : "Tarea completada.";
     if (negativeChanges.length) {
       message =
-        "Tarea completada. Se descontaron los Papipuntos acumulados por los días de atraso. No se otorgaron Papipuntos por completar esta tarea.";
+        "Tarea completada. Se descontaron los Papipuntos acumulados hasta la hora real de finalización. No se otorgaron Papipuntos por completar esta tarea.";
     } else if (hasPenaltyHistory) {
       message =
         "Tarea completada sin recompensa. Esta tarea ya había recibido penalizaciones por vencimiento, por eso no otorga Papipuntos al completarse.";
@@ -505,9 +585,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       message =
         "Tarea completada. Su recompensa de Papipuntos ya había sido procesada y no se generan puntos adicionales.";
     } else if (task.assignedTo === "Ambos" && positiveChanges.length > 1) {
-      message = "Tarea compartida completada. Ambos recibieron Papipuntos.";
+      message = recoverRecurrence
+        ? "Finalización anterior registrada. Ambos recibieron los Papipuntos correspondientes y la recurrencia fue recuperada sin crear atrasos históricos."
+        : "Tarea compartida completada. Ambos recibieron Papipuntos.";
     } else if (totalPositive > 0) {
-      message = `Tarea completada. Ganaste ${totalPositive} Papipuntos.`;
+      message = recoverRecurrence
+        ? `Finalización anterior registrada. Se otorgaron ${totalPositive} Papipuntos y la próxima ocurrencia válida fue recuperada.`
+        : `Tarea completada. Ganaste ${totalPositive} Papipuntos.`;
     }
 
     showToast({
@@ -531,8 +615,39 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     });
   };
 
+  const handleComplete = (task: Task) => {
+    const isPenaltyTask = (task.taskType || "normal") === "penalty";
+    if (isPenaltyTask && task.assignedTo !== currentUser.name) {
+      showToast({
+        message: `Solo ${task.assignedTo} puede marcar esta penalización como resuelta.`,
+      }, 4200);
+      return;
+    }
+
+    if (isPenaltyTask || isTaskOverdue(task)) {
+      const now = new Date();
+      setCompletionDialog({
+        task,
+        stage: "choice",
+        date: [
+          now.getFullYear(),
+          String(now.getMonth() + 1).padStart(2, "0"),
+          String(now.getDate()).padStart(2, "0"),
+        ].join("-"),
+        time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+      });
+      return;
+    }
+
+    void executeTaskCompletion(task, new Date().toISOString(), false);
+  };
+
 
   const handleDuplicate = async (task: Task) => {
+    if ((task.taskType || "normal") === "penalty") {
+      showToast({ message: "Las penalizaciones no se duplican. Crea una nueva penalización para iniciar un nuevo período." }, 4200);
+      return;
+    }
     const timestamp = new Date().toISOString();
     const duplicate: Task = {
       ...task,
@@ -576,6 +691,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleReassign = async (task: Task, assignedTo: TaskAssignee) => {
+    if ((task.taskType || "normal") === "penalty") {
+      showToast({ message: "Una penalización no puede cambiar de responsable después de crearla." }, 4200);
+      return;
+    }
     if (task.isPrivate) {
       showToast({
         message: "Las tareas privadas solo pueden estar asignadas al usuario que las creó.",
@@ -621,6 +740,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleTransfer = (task: Task, target: UserName) => {
+    if ((task.taskType || "normal") === "penalty") {
+      showToast({ message: "Las penalizaciones no se pueden transferir." }, 4200);
+      return;
+    }
     if (task.isPrivate) {
       showToast({
         message: "Las tareas privadas no pueden transferirse. Cámbiala a visibilidad normal primero.",
@@ -686,6 +809,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handlePostpone = async (task: Task, dueDate: string) => {
+    if ((task.taskType || "normal") === "penalty") {
+      showToast({ message: "Las penalizaciones no tienen fecha límite y no pueden posponerse." }, 4200);
+      return;
+    }
     if (isTaskOverdue(task)) {
       const changes = await applyOverduePenalty(task, true);
       showPointsChangesFeedback(changes, `Tarea vencida: ${task.name}`);
@@ -778,12 +905,44 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleCancelTask = (task: Task) => {
+    if ((task.taskType || "normal") === "penalty" && task.assignedTo === currentUser.name) {
+      showToast({
+        message: `No puedes cancelar una penalización asignada a ti. Solo ${currentUser.name === "Yorki" ? "Yisel" : "Yorki"} puede cancelarla.`,
+      }, 4800);
+      return;
+    }
     setTaskActionDialog({ kind: "cancel", task });
   };
 
   const executeCancelTask = async (task: Task, continueRecurrence: boolean) => {
     setTaskActionDialog(null);
     const original = task;
+
+    if ((task.taskType || "normal") === "penalty") {
+      if (task.assignedTo === currentUser.name) {
+        showToast({ message: "La persona penalizada no puede cancelar esta penalización." }, 4200);
+        return;
+      }
+      const timestamp = new Date().toISOString();
+      const penaltyChanges = await settlePenaltyTask(task, timestamp, true);
+      showPointsChangesFeedback(penaltyChanges, `Penalización cancelada: ${task.name}`);
+      await saveTask({
+        ...task,
+        status: "cancelled",
+        cancelledAt: timestamp,
+        cancelledBy: currentUser.name,
+        cancelledByUserId: currentUser.uid,
+        lastModifiedByUserId: currentUser.uid,
+        updatedAt: timestamp,
+      });
+      const accruedPenalty = getPenaltyTaskAccruedPoints(task, timestamp);
+      showToast({
+        message: accruedPenalty > 0
+          ? `Penalización cancelada. La penalización total acumulada hasta este momento fue de ${accruedPenalty} Papipuntos.`
+          : "Penalización cancelada dentro de la primera hora. No se descontaron Papipuntos.",
+      }, 5400);
+      return;
+    }
 
     let overdueChanges: PapipointsChange[] = [];
     if (isTaskOverdue(task)) {
@@ -851,6 +1010,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleRestoreCancelled = async (task: Task) => {
+    if ((task.taskType || "normal") === "penalty") {
+      showToast({ message: "Una penalización cancelada no se restaura. Si vuelve a ocurrir, crea una nueva." }, 4400);
+      return;
+    }
     const restoredTask: Task = {
       ...task,
       status: "pending",
@@ -865,6 +1028,14 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleDelete = (task: Task) => {
+    if ((task.taskType || "normal") === "penalty" && task.status === "pending") {
+      showToast({
+        message: task.assignedTo === currentUser.name
+          ? "No puedes eliminar una penalización pendiente asignada a ti. Debes resolverla."
+          : "Una penalización pendiente no se elimina directamente. Usa “Cancelar penalización” para conservar las consecuencias acumuladas.",
+      }, 5200);
+      return;
+    }
     setTaskActionDialog({ kind: "delete", task });
   };
 
@@ -905,6 +1076,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const handleStopRecurrence = (task: Task) => {
+    if ((task.taskType || "normal") === "penalty") return;
     setTaskActionDialog({ kind: "stop-recurrence", task });
   };
 
@@ -952,7 +1124,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 6,
+      schemaVersion: 7,
       exportedAt: new Date().toISOString(),
       tasks,
     };
@@ -1055,6 +1227,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             key={task.id}
             featured={index === 0}
             task={task}
+            currentUserName={currentUser.name}
             onComplete={(item) => void handleComplete(item)}
             onEdit={openEditForm}
             onDuplicate={(item) => void handleDuplicate(item)}
@@ -1081,6 +1254,20 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         ),
       )}
     </div>
+  );
+
+  const renderPenaltyTasks = () => (
+    <section className="dashboard-task-group penalty-task-section">
+      <div className="dashboard-section-heading">
+        <div>
+          <span className="eyebrow">Atención inmediata</span>
+          <h2>🔴 Penalizaciones activas</h2>
+          <small>Primera hora sin descuento; después −5 PP por cada hora iniciada.</small>
+        </div>
+        <span className="section-count">{penaltyTasks.length}</span>
+      </div>
+      {renderDashboardTasks(penaltyTasks)}
+    </section>
   );
 
   const renderRewardClaims = () => (
@@ -1149,6 +1336,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const getPenaltyPreview = (task: Task): string => {
+    if ((task.taskType || "normal") === "penalty") return "";
     if (!isTaskOverdue(task) || !task.priority || !task.dueDate) return "";
     const due = getTaskDate(task);
     if (!due) return "";
@@ -1191,11 +1379,79 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     return `Esta tarea lleva ${overdueDays} ${overdueDays === 1 ? "día" : "días"} vencida. Antes de continuar se descontarán ${maximumPenalty} Papipuntos a ${assignee}. El saldo puede quedar en negativo.`;
   };
 
+  const getCompletionPapipointsPreview = (task: Task, completedAt: string): string => {
+    if ((task.taskType || "normal") === "penalty") {
+      const points = getPenaltyTaskAccruedPoints(task, completedAt);
+      return points > 0
+        ? `Con esa hora se descontarán ${points} Papipuntos.`
+        : "Con esa hora no se descontarán Papipuntos porque sigue dentro de la primera hora.";
+    }
+    if (!task.priority) return "Esta tarea no tiene prioridad y no genera Papipuntos.";
+    if (hasTaskOverduePenalty(task.id)) {
+      return "Esta tarea ya recibió una penalización por vencimiento, por lo que no otorgará recompensa al completarse.";
+    }
+    if (isTaskOverdueAt(task, completedAt)) {
+      const due = getTaskDate(task);
+      const completed = new Date(completedAt);
+      if (!due) return "Se calculará la penalización hasta la hora real indicada.";
+      let cursor = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+      if (!task.dueTime) cursor.setDate(cursor.getDate() + 1);
+      const end = new Date(completed.getFullYear(), completed.getMonth(), completed.getDate());
+      let days = 0;
+      while (cursor.getTime() <= end.getTime()) {
+        const key = [cursor.getFullYear(), String(cursor.getMonth() + 1).padStart(2, "0"), String(cursor.getDate()).padStart(2, "0")].join("-");
+        if (!task.overduePenaltyStartDate || key >= task.overduePenaltyStartDate) days += 1;
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      const amount = days * OVERDUE_PENALTY[task.priority];
+      return task.assignedTo === "Ambos"
+        ? `Con esa hora se descontarán hasta ${amount} Papipuntos a cada usuario y no habrá recompensa.`
+        : `Con esa hora se descontarán hasta ${amount} Papipuntos a ${task.assignedTo} y no habrá recompensa.`;
+    }
+    const base = COMPLETION_POINTS[task.priority];
+    const early = isCompletedEarly(task, completedAt) ? EARLY_COMPLETION_BONUS[task.priority] : 0;
+    const manual = task.source === "manual" ? TASK_CREATION_POINTS : 0;
+    const total = base + early + manual;
+    return task.assignedTo === "Ambos"
+      ? `Con esa hora, Yorki y Yisel recibirán ${total} Papipuntos cada uno.`
+      : `Con esa hora se otorgarán ${total} Papipuntos.`;
+  };
+
+  const completionSelectedAt = completionDialog
+    ? new Date(`${completionDialog.date}T${completionDialog.time || "00:00"}:00`)
+    : null;
+  const completionSelectedIso = completionSelectedAt && !Number.isNaN(completionSelectedAt.getTime())
+    ? completionSelectedAt.toISOString()
+    : "";
+  const completionInvalid = Boolean(
+    completionDialog &&
+      (!completionSelectedIso ||
+        (completionSelectedAt && completionSelectedAt.getTime() > Date.now()) ||
+        ((completionDialog.task.taskType || "normal") === "penalty" &&
+          completionSelectedAt &&
+          completionSelectedAt.getTime() < new Date(completionDialog.task.penaltyStartedAt || completionDialog.task.createdAt).getTime())),
+  );
+
   const taskActionContent = taskActionDialog
     ? (() => {
         const task = taskActionDialog.task;
         const recurring = task.recurrence.type !== "none";
         const penaltyText = getPenaltyPreview(task);
+        const isPenaltyTask = (task.taskType || "normal") === "penalty";
+
+        if (isPenaltyTask && taskActionDialog.kind === "cancel") {
+          const accrued = getPenaltyTaskAccruedPoints(task);
+          return {
+            title: "Cancelar penalización",
+            paragraphs: [
+              `Esta penalización está asignada a ${task.assignedTo}. Solo la otra persona puede cancelarla.`,
+              accrued > 0
+                ? `Antes de cancelarla se aplicarán ${accrued} Papipuntos acumulados por el tiempo transcurrido. Cancelarla no elimina esa penalización.`
+                : "Todavía está dentro de la primera hora de gracia, por lo que cancelarla ahora no descontará Papipuntos.",
+              "La penalización quedará cerrada y no podrá restaurarse. Si vuelve a ocurrir, deberá crearse una nueva.",
+            ],
+          };
+        }
 
         if (taskActionDialog.kind === "stop-recurrence") {
           return {
@@ -1540,6 +1796,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             )}
 
             {visibleRewardClaims.length > 0 && renderRewardClaims()}
+            {dashboardFilter === "all" && penaltyTasks.length > 0 && renderPenaltyTasks()}
 
             {dashboardFilter !== "all" ? (
               <section className="dashboard-filtered-section">
@@ -1565,7 +1822,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                     ? renderDashboardTasks(dashboardFilteredTasks)
                     : <p className="section-empty">No hay tareas en este filtro.</p>}
               </section>
-            ) : pendingTasks.length ? (
+            ) : normalPendingTasks.length ? (
               <div className="dashboard-groups">
                 <section className="dashboard-task-group today-task-group">
                   <div className="dashboard-section-heading">
@@ -1603,7 +1860,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                   </section>
                 )}
               </div>
-            ) : (
+            ) : penaltyTasks.length ? null : (
               <section className="empty-state">
                 <span className="empty-icon">✓</span>
                 <h2>{incompleteTasks.length ? "No hay tareas listas" : "No hay tareas pendientes"}</h2>
@@ -1725,28 +1982,42 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
               {pendingTasks.length ? (
                 <div className="management-list">
-                  {pendingTasks.map((task) => (
-                    <article className="management-row" key={task.id}>
-                      <span className={`priority-dot priority-dot-${task.priority || "normal"}`} />
+                  {pendingTasks.map((task) => {
+                    const isPenaltyTask = (task.taskType || "normal") === "penalty";
+                    const accruedPenalty = isPenaltyTask ? getPenaltyTaskAccruedPoints(task) : 0;
+                    return (
+                    <article className={`management-row ${isPenaltyTask ? "penalty-management-row" : ""}`} key={task.id}>
+                      <span className={isPenaltyTask ? "penalty-management-mark" : `priority-dot priority-dot-${task.priority || "normal"}`}>
+                        {isPenaltyTask ? "!" : ""}
+                      </span>
                       <div className="management-main">
                         <strong>{task.name}</strong>
                         <span>
-                          {task.assignedTo} · {formatDueDate(task)} · {formatDuration(task.estimatedMinutes)}
+                          {isPenaltyTask
+                            ? `${task.assignedTo} · ${accruedPenalty ? `−${accruedPenalty} PP acumulados` : "dentro de la primera hora"}`
+                            : `${task.assignedTo} · ${formatDueDate(task)} · ${formatDuration(task.estimatedMinutes)}`}
                         </span>
                       </div>
-                      <span className={`status-pill ${isTaskOverdue(task) ? "status-overdue" : ""}`}>
-                        {isTaskOverdue(task) ? "Vencida" : priorityLabels[task.priority || "normal"]}
+                      <span className={`status-pill ${isPenaltyTask ? "status-penalty" : isTaskOverdue(task) ? "status-overdue" : ""}`}>
+                        {isPenaltyTask ? "Penalización" : isTaskOverdue(task) ? "Vencida" : priorityLabels[task.priority || "normal"]}
                       </span>
                       <div className="row-actions">
                         <button onClick={() => openEditForm(task)}>Editar</button>
-                        <button onClick={() => void handleComplete(task)}>Completar</button>
-                        <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
-                        <button className="danger-action" onClick={() => void handleDelete(task)}>
-                          Eliminar
-                        </button>
+                        <button onClick={() => void handleComplete(task)}>{isPenaltyTask ? "Resolver" : "Completar"}</button>
+                        {!isPenaltyTask && <button onClick={() => void handleDuplicate(task)}>Duplicar</button>}
+                        {isPenaltyTask ? (
+                          task.assignedTo !== currentUser.name ? (
+                            <button className="danger-action" onClick={() => handleCancelTask(task)}>Cancelar penalización</button>
+                          ) : null
+                        ) : (
+                          <button className="danger-action" onClick={() => void handleDelete(task)}>
+                            Eliminar
+                          </button>
+                        )}
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="list-empty">No hay tareas pendientes en esta vista.</p>
@@ -1782,7 +2053,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                         </div>
                         <div className="row-actions">
                           <button onClick={() => openEditForm(task)}>Editar</button>
-                          <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                          {(task.taskType || "normal") !== "penalty" && (
+                            <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                          )}
                           <button className="danger-action" onClick={() => void handleDelete(task)}>
                             Eliminar
                           </button>
@@ -1816,8 +2089,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                           <span>Cancelada por {task.cancelledBy || task.assignedTo}</span>
                         </div>
                         <div className="row-actions">
-                          <button onClick={() => void handleRestoreCancelled(task)}>Restaurar</button>
-                          <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                          {(task.taskType || "normal") !== "penalty" && (
+                            <>
+                              <button onClick={() => void handleRestoreCancelled(task)}>Restaurar</button>
+                              <button onClick={() => void handleDuplicate(task)}>Duplicar</button>
+                            </>
+                          )}
                           <button className="danger-action" onClick={() => void handleDelete(task)}>
                             Eliminar
                           </button>
@@ -1886,6 +2163,126 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         </div>
       )}
 
+      {completionDialog && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setCompletionDialog(null)}>
+          <div
+            className="action-confirm-modal completion-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="completion-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="eyebrow">Confirmar finalización</span>
+            <h2 id="completion-dialog-title">
+              {(completionDialog.task.taskType || "normal") === "penalty"
+                ? "Resolver penalización"
+                : completionDialog.stage === "past"
+                  ? "Registrar finalización anterior"
+                  : "Completar tarea vencida"}
+            </h2>
+            <strong className="action-task-name">“{completionDialog.task.name}”</strong>
+
+            {completionDialog.stage === "choice" ? (
+              <>
+                <div className="action-confirm-copy">
+                  <p>
+                    {(completionDialog.task.taskType || "normal") === "penalty"
+                      ? "Indica si la resolviste ahora o si ya estaba resuelta desde antes. La hora real determina la penalización."
+                      : "Esta tarea está vencida. Indica cuándo la completaste realmente para calcular correctamente los Papipuntos y recuperar su recurrencia."}
+                  </p>
+                  <p>{getCompletionPapipointsPreview(completionDialog.task, new Date().toISOString())}</p>
+                </div>
+                <div className="action-confirm-buttons">
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={() => void executeTaskCompletion(completionDialog.task, new Date().toISOString(), false)}
+                  >
+                    {(completionDialog.task.taskType || "normal") === "penalty" ? "La resolví ahora" : "La completé ahora"}
+                  </button>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => {
+                      const task = completionDialog.task;
+                      const now = new Date();
+                      setCompletionDialog({
+                        ...completionDialog,
+                        stage: "past",
+                        date: (task.taskType || "normal") === "penalty"
+                          ? [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-")
+                          : task.dueDate || completionDialog.date,
+                        time: (task.taskType || "normal") === "penalty"
+                          ? completionDialog.time
+                          : task.dueTime || completionDialog.time,
+                      });
+                    }}
+                  >
+                    {(completionDialog.task.taskType || "normal") === "penalty" ? "Ya estaba resuelta" : "Ya estaba completada"}
+                  </button>
+                  <button className="button button-quiet" type="button" onClick={() => setCompletionDialog(null)}>
+                    Volver
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="completion-date-grid">
+                  <label className="field">
+                    <span>Fecha real</span>
+                    <input
+                      type="date"
+                      value={completionDialog.date}
+                      onChange={(event) => setCompletionDialog({ ...completionDialog, date: event.target.value })}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Hora real</span>
+                    <input
+                      type="time"
+                      value={completionDialog.time}
+                      onChange={(event) => setCompletionDialog({ ...completionDialog, time: event.target.value })}
+                    />
+                  </label>
+                </div>
+                <div className="completion-preview">
+                  {completionInvalid ? (
+                    <strong>La fecha y hora deben ser válidas, no pueden estar en el futuro y, para una penalización, no pueden ser anteriores a su creación.</strong>
+                  ) : (
+                    <>
+                      <strong>{getCompletionPapipointsPreview(completionDialog.task, completionSelectedIso)}</strong>
+                      {(completionDialog.task.taskType || "normal") !== "penalty" && completionDialog.task.recurrence.type !== "none" && (
+                        <span>La serie se recuperará en la ocurrencia válida de hoy o en la próxima fecha aplicable, sin crear un atraso de tareas históricas.</span>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="action-confirm-buttons">
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    disabled={completionInvalid}
+                    onClick={() => void executeTaskCompletion(completionDialog.task, completionSelectedIso, true)}
+                  >
+                    {(completionDialog.task.taskType || "normal") === "penalty" ? "Confirmar resolución" : "Registrar finalización"}
+                  </button>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => setCompletionDialog({ ...completionDialog, stage: "choice" })}
+                  >
+                    Atrás
+                  </button>
+                  <button className="button button-quiet" type="button" onClick={() => setCompletionDialog(null)}>
+                    Cancelar
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {taskActionDialog && taskActionContent && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setTaskActionDialog(null)}>
           <div
@@ -1930,7 +2327,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
               {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type === "none" && (
                 <button className="button button-primary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, false)}>
-                  Cancelar tarea
+                  {(taskActionDialog.task.taskType || "normal") === "penalty" ? "Cancelar penalización" : "Cancelar tarea"}
                 </button>
               )}
 

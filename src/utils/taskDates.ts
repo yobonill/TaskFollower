@@ -83,10 +83,21 @@ export const getTaskDate = (
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-export const isTaskOverdue = (task: Task): boolean => {
+export const isTaskOverdueAt = (task: Task, at: string | Date): boolean => {
   const due = getTaskDate(task);
-  return task.status === "pending" && Boolean(due && due.getTime() < Date.now());
+  const moment = at instanceof Date ? at : new Date(at);
+  return (
+    task.status === "pending" &&
+    Boolean(
+      due &&
+        !Number.isNaN(moment.getTime()) &&
+        due.getTime() < moment.getTime(),
+    )
+  );
 };
+
+export const isTaskOverdue = (task: Task): boolean =>
+  isTaskOverdueAt(task, new Date());
 
 export const isTaskDueToday = (task: Task): boolean => {
   const due = getTaskDate(task);
@@ -108,6 +119,11 @@ const priorityWeight: Record<TaskPriority, number> = {
 
 export const sortPendingTasks = (tasks: Task[]): Task[] =>
   [...tasks].sort((a, b) => {
+    const penaltyDifference =
+      Number((b.taskType || "normal") === "penalty") -
+      Number((a.taskType || "normal") === "penalty");
+    if (penaltyDifference !== 0) return penaltyDifference;
+
     const overdueDifference = Number(isTaskOverdue(b)) - Number(isTaskOverdue(a));
     if (overdueDifference !== 0) return overdueDifference;
 
@@ -321,6 +337,43 @@ export const getNextRecurrenceOccurrence = (
     dueDate: getNextDueDate(currentDueDate, recurrence, completedAt),
     occurrenceIndex: 1,
   };
+};
+
+
+/**
+ * Calculates the occurrence that should be active when an old completion is
+ * registered later. The real completion time drives Papipuntos/history, while
+ * missed recurrence occurrences between that moment and registration time are
+ * skipped so the app never creates a historical backlog.
+ */
+export const getRecoveredRecurrenceOccurrence = (
+  currentDueDate: string,
+  recurrence: TaskRecurrence,
+  currentOccurrenceIndex = 1,
+  actualCompletedAt: string,
+  registeredAt = new Date().toISOString(),
+): NextRecurrenceOccurrence => {
+  let candidate = getNextRecurrenceOccurrence(
+    currentDueDate,
+    recurrence,
+    currentOccurrenceIndex,
+    actualCompletedAt,
+  );
+  const registered = parseDateLike(registeredAt) || new Date();
+  const targetDateKey = toDateInputValue(registered);
+
+  // Keep the first occurrence whose scheduled day is today or later. Multiple
+  // occurrences on missed days are intentionally skipped one by one.
+  for (let guard = 0; candidate.dueDate < targetDateKey && guard < 10000; guard += 1) {
+    candidate = getNextRecurrenceOccurrence(
+      candidate.dueDate,
+      recurrence,
+      candidate.occurrenceIndex,
+      `${candidate.dueDate}T12:00:00`,
+    );
+  }
+
+  return candidate;
 };
 
 export const formatWeekdayRecurrence = (weekdays?: readonly number[]): string => {

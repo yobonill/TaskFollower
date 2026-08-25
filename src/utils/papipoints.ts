@@ -3,13 +3,15 @@ import type {
   PapipointsTransaction,
 } from "../models/gamification";
 import type { Task, TaskPriority, UserName } from "../models/task";
-import { getTaskDate } from "./taskDates";
+import { getTaskDate, isTaskOverdueAt } from "./taskDates";
 
 export const MAX_LEVEL = 100;
 export const TASK_CREATION_POINTS = 2;
 export const LEVEL_GROWTH = 1.4;
 export const FIRST_LEVEL_REQUIREMENT = 100;
 export const LEVEL_REQUIREMENT_CAP = 500;
+export const PENALTY_TASK_GRACE_MINUTES = 60;
+export const PENALTY_TASK_POINTS_PER_HOUR = 5;
 
 /**
  * Existing tasks that were already overdue before this release are not
@@ -124,8 +126,12 @@ export const isCompletedEarly = (task: Task, completedAt: string): boolean => {
   return completedDate < task.dueDate;
 };
 
-export const isEligibleForOverduePenalty = (task: Task): boolean => {
+export const isEligibleForOverduePenaltyAt = (
+  task: Task,
+  at: string | Date,
+): boolean => {
   if (
+    (task.taskType || "normal") === "penalty" ||
     task.status !== "pending" ||
     task.isUnassigned ||
     !task.name.trim() ||
@@ -133,9 +139,50 @@ export const isEligibleForOverduePenalty = (task: Task): boolean => {
     !task.dueDate
   ) return false;
   const due = getTaskDate(task);
-  if (!due || due.getTime() >= Date.now()) return false;
+  if (!due || !isTaskOverdueAt(task, at)) return false;
   return due.getTime() > new Date(PAPIPOINTS_ACTIVATION_AT).getTime();
 };
+
+export const isEligibleForOverduePenalty = (task: Task): boolean =>
+  isEligibleForOverduePenaltyAt(task, new Date());
+
+export const getPenaltyTaskAccruedHours = (
+  task: Pick<
+    Task,
+    "taskType" | "penaltyStartedAt" | "createdAt" | "penaltyGraceMinutes"
+  >,
+  at: string | Date = new Date(),
+): number => {
+  if ((task.taskType || "normal") !== "penalty") return 0;
+  const started = new Date(task.penaltyStartedAt || task.createdAt);
+  const moment = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(started.getTime()) || Number.isNaN(moment.getTime())) return 0;
+  const graceMinutes = Math.max(
+    1,
+    Math.floor(Number(task.penaltyGraceMinutes) || PENALTY_TASK_GRACE_MINUTES),
+  );
+  const elapsedAfterGrace =
+    moment.getTime() - started.getTime() - graceMinutes * 60_000;
+  if (elapsedAfterGrace <= 0) return 0;
+  return Math.ceil(elapsedAfterGrace / 3_600_000);
+};
+
+export const getPenaltyTaskAccruedPoints = (
+  task: Pick<
+    Task,
+    | "taskType"
+    | "penaltyStartedAt"
+    | "createdAt"
+    | "penaltyGraceMinutes"
+    | "penaltyPointsPerHour"
+  >,
+  at: string | Date = new Date(),
+): number =>
+  getPenaltyTaskAccruedHours(task, at) *
+  Math.max(
+    1,
+    Math.floor(Number(task.penaltyPointsPerHour) || PENALTY_TASK_POINTS_PER_HOUR),
+  );
 
 export const formatPapipoints = (amount: number): string =>
   `${amount.toLocaleString("es-DO")} Papipuntos`;

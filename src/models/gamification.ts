@@ -5,6 +5,7 @@ export type PapipointsTransactionType =
   | "task_completed"
   | "task_early"
   | "task_overdue"
+  | "penalty_task_hourly"
   | "reward_redeemed"
   | "reward_refund"
   | "reward_overdue_transfer";

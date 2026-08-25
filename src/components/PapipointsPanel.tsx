@@ -12,6 +12,8 @@ import {
   getLevelFromPapipoints,
   MAX_LEVEL,
   OVERDUE_PENALTY,
+  PENALTY_TASK_GRACE_MINUTES,
+  PENALTY_TASK_POINTS_PER_HOUR,
   TASK_CREATION_POINTS,
 } from "../utils/papipoints";
 import type { RedeemResult } from "../hooks/usePapipoints";
@@ -37,6 +39,7 @@ const transactionTypeLabels: Record<PapipointsTransaction["type"], string> = {
   task_completed: "Tarea completada",
   task_early: "Completada antes de tiempo",
   task_overdue: "Tarea vencida",
+  penalty_task_hourly: "Penalización por hora",
   reward_redeemed: "Recompensa canjeada",
   reward_refund: "Reembolso de recompensa",
   reward_overdue_transfer: "Recompensa vencida",
@@ -408,6 +411,9 @@ export function PapipointsPanel({
               </div>
               <small>
                 Una tarea que ya recibió penalizaciones por vencimiento no otorga Papipuntos al completarse. Si se pospone y vuelve a vencerse, puede acumular nuevas penalizaciones.
+              </small>
+              <small>
+                Las tareas de penalización tienen {PENALTY_TASK_GRACE_MINUTES} minutos de gracia. Después descuentan −{PENALTY_TASK_POINTS_PER_HOUR} PP por cada hora iniciada hasta que se resuelven; no otorgan recompensa y el saldo puede quedar en negativo.
               </small>
               <small>
                 En recompensas vencidas, cada día transfiere el 10% del costo original desde quien debe entregarla hacia quien la solicitó. Los Papipuntos pueden quedar en negativo.

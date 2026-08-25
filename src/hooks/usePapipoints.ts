@@ -27,7 +27,7 @@ import type {
 import type { Task, UserName } from "../models/task";
 import { getAuthenticatedFirebaseServices } from "../services/firebase";
 import { getTaskAssigneeUsers } from "../utils/taskAssignment";
-import { getTaskDate, isTaskOverdue } from "../utils/taskDates";
+import { getTaskDate, isTaskOverdue, isTaskOverdueAt } from "../utils/taskDates";
 import {
   COMPLETION_POINTS,
   EARLY_COMPLETION_BONUS,
@@ -36,8 +36,11 @@ import {
   getLevelFromPapipoints,
   getPapipointsBalance,
   getPapipointsProfile,
+  getPenaltyTaskAccruedHours,
   isCompletedEarly,
   isEligibleForOverduePenalty,
+  isEligibleForOverduePenaltyAt,
+  PENALTY_TASK_POINTS_PER_HOUR,
 } from "../utils/papipoints";
 
 const TRANSACTIONS_CACHE_KEY = "taskFollower.papipoints.transactions.v1";
@@ -479,7 +482,16 @@ export interface UsePapipointsResult {
     completedBy: AppUserDefinition,
   ) => Promise<PapipointsChange[]>;
   removeTaskCompletionRewards: (taskId: string) => Promise<PapipointsChange[]>;
-  applyOverduePenalty: (task: Task, force?: boolean) => Promise<PapipointsChange[]>;
+  applyOverduePenalty: (
+    task: Task,
+    force?: boolean,
+    effectiveAt?: string,
+  ) => Promise<PapipointsChange[]>;
+  settlePenaltyTask: (
+    task: Task,
+    effectiveAt?: string,
+    reconcile?: boolean,
+  ) => Promise<PapipointsChange[]>;
   hasTaskOverduePenalty: (taskId: string) => boolean;
   saveReward: (reward: PapipointsReward) => Promise<void>;
   configureReward: (rewardId: string, cost: number, fulfillmentDays: number) => Promise<void>;
@@ -822,6 +834,78 @@ export const usePapipoints = (
     [currentUser.uid, submitOperation, updateTransactions],
   );
 
+  const settlePenaltyTask = useCallback(
+    async (
+      task: Task,
+      effectiveAt = new Date().toISOString(),
+      reconcile = false,
+    ): Promise<PapipointsChange[]> => {
+      if ((task.taskType || "normal") !== "penalty" || task.isUnassigned) {
+        return [];
+      }
+
+      const recipients = getTaskAssigneeUsers(task);
+      if (!recipients.length) return [];
+      const expectedHours = getPenaltyTaskAccruedHours(task, effectiveAt);
+      const pointsPerHour = Math.max(
+        1,
+        Math.floor(Number(task.penaltyPointsPerHour) || PENALTY_TASK_POINTS_PER_HOUR),
+      );
+      const expectedIds = new Set<string>();
+      const changes = new Map<string, PapipointsChange>();
+
+      for (const recipient of recipients) {
+        for (let hour = 1; hour <= expectedHours; hour += 1) {
+          const transactionId = `penalty-task-hour:${task.id}:${hour}:${recipient.uid}`;
+          expectedIds.add(transactionId);
+          const added = await upsertTransaction({
+            id: transactionId,
+            userId: recipient.uid,
+            userName: recipient.name,
+            amount: -pointsPerHour,
+            type: "penalty_task_hourly",
+            description: `Penalización: ${getTaskPapipointsLabel(task)} (hora ${hour} · ${pointsPerHour} Papipuntos)`,
+            taskId: task.id,
+            createdAt: effectiveAt,
+            createdByUserId: currentUser.uid,
+          });
+          if (added) {
+            const current = changes.get(recipient.uid) || {
+              userId: recipient.uid,
+              userName: recipient.name,
+              amount: 0,
+            };
+            current.amount -= pointsPerHour;
+            changes.set(recipient.uid, current);
+          }
+        }
+      }
+
+      if (reconcile) {
+        const existing = readCachedTransactions().filter(
+          (item) =>
+            item.taskId === task.id && item.type === "penalty_task_hourly",
+        );
+        for (const transaction of existing) {
+          if (expectedIds.has(transaction.id)) continue;
+          await deleteTransaction(transaction.id);
+          const recipient = getAppUserByUid(transaction.userId);
+          if (!recipient) continue;
+          const current = changes.get(recipient.uid) || {
+            userId: recipient.uid,
+            userName: recipient.name,
+            amount: 0,
+          };
+          current.amount -= transaction.amount;
+          changes.set(recipient.uid, current);
+        }
+      }
+
+      return [...changes.values()].filter((change) => change.amount !== 0);
+    },
+    [currentUser.uid, deleteTransaction, upsertTransaction],
+  );
+
   const removePendingTaskCreationReward = useCallback(
     async (taskId: string): Promise<PapipointsChange | null> => {
       const transaction = readCachedTransactions().find(
@@ -870,15 +954,19 @@ export const usePapipoints = (
   );
 
   const applyOverduePenalty = useCallback(
-    async (task: Task, force = false): Promise<PapipointsChange[]> => {
-      if (!task.priority || !isTaskOverdue(task)) return [];
-      if (!force && !isEligibleForOverduePenalty(task)) return [];
+    async (
+      task: Task,
+      force = false,
+      effectiveAt = new Date().toISOString(),
+    ): Promise<PapipointsChange[]> => {
+      if (!task.priority || !isTaskOverdueAt(task, effectiveAt)) return [];
+      if (!force && !isEligibleForOverduePenaltyAt(task, effectiveAt)) return [];
 
       const changes = new Map<string, PapipointsChange>();
       const legacyCreation = await removePendingTaskCreationReward(task.id);
       if (legacyCreation) changes.set(legacyCreation.userId, legacyCreation);
 
-      const overdueDays = getOverdueDayKeys(task);
+      const overdueDays = getOverdueDayKeys(task, new Date(effectiveAt));
       if (!overdueDays.length) return [...changes.values()];
 
       const resolvedAt = new Date().toISOString();
@@ -944,6 +1032,9 @@ export const usePapipoints = (
       completedAt: string,
       completedBy: AppUserDefinition,
     ): Promise<PapipointsChange[]> => {
+      if ((task.taskType || "normal") === "penalty") {
+        return settlePenaltyTask(task, completedAt, true);
+      }
       if (!task.priority) return [];
 
       // Penalties are calculated when the task is completed (or when an
@@ -951,8 +1042,11 @@ export const usePapipoints = (
       // daily deduction. Each overdue cycle is charged once for all calendar
       // days accumulated in that cycle.
       let penaltyChanges: PapipointsChange[] = [];
-      if (isTaskOverdue(task) && isEligibleForOverduePenalty(task)) {
-        penaltyChanges = await applyOverduePenalty(task);
+      if (
+        isTaskOverdueAt(task, completedAt) &&
+        isEligibleForOverduePenaltyAt(task, completedAt)
+      ) {
+        penaltyChanges = await applyOverduePenalty(task, false, completedAt);
       }
 
       // Once a task has ever received an overdue penalty, it permanently loses
@@ -1037,6 +1131,7 @@ export const usePapipoints = (
       currentUser.uid,
       removePendingTaskCreationReward,
       resolveTaskOutcome,
+      settlePenaltyTask,
     ],
   );
 
@@ -1544,6 +1639,7 @@ export const usePapipoints = (
     awardTaskCompletion,
     removeTaskCompletionRewards,
     applyOverduePenalty,
+    settlePenaltyTask,
     hasTaskOverduePenalty,
     saveReward,
     configureReward,

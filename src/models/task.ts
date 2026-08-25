@@ -4,6 +4,7 @@ export type TaskAssignee = UserName | "Ambos";
 export type UserFilter = "all" | UserName;
 
 export type TaskPriority = "low" | "normal" | "high" | "critical";
+export type TaskType = "normal" | "penalty";
 export type TaskStatus = "pending" | "done" | "cancelled";
 export type RecurrenceType = "none" | "daily" | "weekly" | "weekdays" | "monthly";
 export type WeekdayNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -29,6 +30,8 @@ export interface TaskRecurrence {
 
 export interface Task {
   id: string;
+  /** Normal work item or a special negative Papipuntos accountability task. */
+  taskType?: TaskType;
   name: string;
   description: string;
   estimatedMinutes?: number;
@@ -53,6 +56,11 @@ export interface Task {
   status: TaskStatus;
   recurrence: TaskRecurrence;
   recurrenceSeriesId?: string;
+  /** Start of the penalty timer. Kept stable even if the task is edited later. */
+  penaltyStartedAt?: string;
+  /** Snapshot of penalty terms so old tasks keep the rules they were created with. */
+  penaltyGraceMinutes?: number;
+  penaltyPointsPerHour?: number;
   /** 1-based occurrence within the scheduled day (for example 2 of 3). */
   recurrenceOccurrenceIndex?: number;
   /** Earliest overdue calendar day that may be charged after responsibility changes. */
@@ -69,7 +77,7 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 6;
+  schemaVersion: 7;
   exportedAt: string;
   tasks: Task[];
 }
