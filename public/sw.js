@@ -1,5 +1,7 @@
-const CACHE_NAME = "taskfollower-shell-v16";
+const CACHE_PREFIX = "taskfollower-shell-";
+const CACHE_NAME = `${CACHE_PREFIX}v17`;
 const APP_ROOT = self.registration.scope;
+const APP_SCOPE_URL = new URL(APP_ROOT);
 const SHELL_URLS = [
   APP_ROOT,
   new URL("index.html", APP_ROOT).toString(),
@@ -7,6 +9,10 @@ const SHELL_URLS = [
   new URL("icons/icon-192.png", APP_ROOT).toString(),
   new URL("icons/icon-512.png", APP_ROOT).toString(),
 ];
+
+const isWithinTaskFollowerScope = (url) =>
+  url.origin === APP_SCOPE_URL.origin &&
+  url.pathname.startsWith(APP_SCOPE_URL.pathname);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -22,7 +28,13 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+        Promise.all(
+          keys
+            .filter(
+              (key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME,
+            )
+            .map((key) => caches.delete(key)),
+        ),
       )
       .then(() => self.clients.claim()),
   );
@@ -33,37 +45,45 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
+  if (!isWithinTaskFollowerScope(url)) return;
 
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+
+        try {
+          const response = await fetch(request);
+          if (response.ok) {
+            await cache.put(request, response.clone());
+          }
           return response;
-        })
-        .catch(async () =>
-          (await caches.match(request)) ||
-          (await caches.match(new URL("index.html", APP_ROOT).toString())) ||
-          (await caches.match(APP_ROOT)),
-        ),
+        } catch {
+          return (
+            (await cache.match(request)) ||
+            (await cache.match(new URL("index.html", APP_ROOT).toString())) ||
+            (await cache.match(APP_ROOT))
+          );
+        }
+      })(),
     );
     return;
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const cached = await cache.match(request);
       const network = fetch(request)
-        .then((response) => {
+        .then(async (response) => {
           if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            await cache.put(request, response.clone());
           }
           return response;
         })
         .catch(() => cached);
+
       return cached || network;
-    }),
+    })(),
   );
 });
