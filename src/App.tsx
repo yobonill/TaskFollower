@@ -11,6 +11,7 @@ import { LevelProgress, PapipointsPanel } from "./components/PapipointsPanel";
 import { TaskCard } from "./components/TaskCard";
 import { getTaskFormDraftKey, TaskForm } from "./components/TaskForm";
 import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
+import { StatisticsPanel } from "./components/StatisticsPanel";
 import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
 import { usePapipoints, type PapipointsChange } from "./hooks/usePapipoints";
@@ -56,7 +57,7 @@ import "./styles.css";
 const USER_FILTER_KEY = "taskFollower.taskFilter.v1";
 const APP_LOCALE = "es-DO";
 
-type View = "dashboard" | "manage" | "papipoints";
+type View = "dashboard" | "manage" | "papipoints" | "statistics";
 type DashboardFilter = "all" | "overdue" | "today" | "pending" | "undated" | "incomplete" | "similar";
 type ImportMode = "merge" | "replace";
 
@@ -1303,6 +1304,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               <div className="reward-obligation-topline"><span>{isRewardOverdue ? `⚠ VENCIDA · ${overdueDays} ${overdueDays === 1 ? "día" : "días"}` : "🎁 RECOMPENSA"}</span><strong>PRIORIDAD MÁXIMA</strong></div>
               <h3>{claim.rewardName}</h3>
               {claim.rewardDescription && <p>{claim.rewardDescription}</p>}
+              {claim.purchaseComment && (
+                <div className="reward-purchase-comment reward-purchase-comment-priority">
+                  <span>Comentario al canjear</span>
+                  <p>{claim.purchaseComment}</p>
+                </div>
+              )}
               <div className="reward-obligation-meta">
                 <span>Para: <b>{requesterName}</b></span>
                 <span>La entrega: <b>{providerName}</b></span>
@@ -1595,6 +1602,16 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           >
             <span className="sidebar-icon">★</span>
             <span className="sidebar-label">Papipuntos</span>
+          </button>
+
+          <button
+            className={`sidebar-item ${view === "statistics" ? "sidebar-item-active" : ""}`}
+            type="button"
+            title="Estadísticas de tareas"
+            onClick={() => changeView("statistics")}
+          >
+            <span className="sidebar-icon">▥</span>
+            <span className="sidebar-label">Estadísticas</span>
           </button>
 
           <button
@@ -1896,6 +1913,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             onCancelRewardClaim={cancelRewardClaim}
             onMessage={(message) => showToast({ message }, 4200)}
           />
+        )}
+
+        {view === "statistics" && (
+          <StatisticsPanel tasks={tasks} transactions={transactions} />
         )}
 
         {view === "manage" && (

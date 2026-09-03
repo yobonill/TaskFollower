@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "taskfollower-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v17`;
+const CACHE_NAME = `${CACHE_PREFIX}v18`;
 const APP_ROOT = self.registration.scope;
 const APP_SCOPE_URL = new URL(APP_ROOT);
 const SHELL_URLS = [
