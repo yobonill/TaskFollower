@@ -497,7 +497,7 @@ export interface UsePapipointsResult {
   configureReward: (rewardId: string, cost: number, fulfillmentDays: number) => Promise<void>;
   rejectReward: (rewardId: string) => Promise<void>;
   deleteReward: (rewardId: string) => Promise<void>;
-  redeemReward: (reward: PapipointsReward) => Promise<RedeemResult>;
+  redeemReward: (reward: PapipointsReward, purchaseComment?: string) => Promise<RedeemResult>;
   completeRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   cancelRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   settleRewardClaimPenalties: (claim: PapipointsRewardClaim) => Promise<PapipointsChange[]>;
@@ -1304,7 +1304,7 @@ export const usePapipoints = (
   );
 
   const redeemReward = useCallback(
-    async (reward: PapipointsReward): Promise<RedeemResult> => {
+    async (reward: PapipointsReward, purchaseComment?: string): Promise<RedeemResult> => {
       const normalized = normalizeReward(reward);
       const cost = normalized.cost || 0;
       const fulfillmentDays = normalized.fulfillmentDays || 0;
@@ -1344,6 +1344,7 @@ export const usePapipoints = (
         rewardId: normalized.id,
         rewardName: normalized.name,
         rewardDescription: normalized.description,
+        purchaseComment: purchaseComment?.trim() || undefined,
         requesterUserId: currentUser.uid,
         providerUserId: normalized.providerUserId,
         cost,

@@ -70,6 +70,8 @@ export interface PapipointsRewardClaim {
   rewardId: string;
   rewardName: string;
   rewardDescription: string;
+  /** Optional note added only when this specific reward is redeemed. */
+  purchaseComment?: string;
   requesterUserId: string;
   providerUserId: string;
   cost: number;

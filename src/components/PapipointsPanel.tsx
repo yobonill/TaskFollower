@@ -28,7 +28,7 @@ interface PapipointsPanelProps {
   onConfigureReward: (rewardId: string, cost: number, fulfillmentDays: number) => Promise<void>;
   onRejectReward: (rewardId: string) => Promise<void>;
   onDeleteReward: (rewardId: string) => Promise<void>;
-  onRedeemReward: (reward: PapipointsReward) => Promise<RedeemResult>;
+  onRedeemReward: (reward: PapipointsReward, purchaseComment?: string) => Promise<RedeemResult>;
   onCompleteRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   onCancelRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   onMessage: (message: string) => void;
@@ -150,6 +150,8 @@ export function PapipointsPanel({
   const [configDays, setConfigDays] = useState("2");
   const [saving, setSaving] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [redeemingReward, setRedeemingReward] = useState<PapipointsReward | null>(null);
+  const [redeemComment, setRedeemComment] = useState("");
   const [showRules, setShowRules] = useState(false);
 
   const currentProfile = profiles[currentUser.name];
@@ -290,22 +292,28 @@ export function PapipointsPanel({
     onMessage(`Recompensa configurada: ${cost} Papipuntos y ${days} ${days === 1 ? "día" : "días"} para entregarla.`);
   };
 
-  const redeem = async (reward: PapipointsReward) => {
-    const cost = reward.cost || 0;
-    const nextLevel = getLevelFromPapipoints(currentProfile.balance - cost);
-    const levelText =
-      nextLevel < currentProfile.level
-        ? ` Tu nivel bajará de ${currentProfile.level} a ${nextLevel}.`
-        : "";
-    if (
-      !window.confirm(
-        `Canjear “${reward.name}” costará ${cost} Papipuntos. ${partner.name} tendrá ${reward.fulfillmentDays} ${reward.fulfillmentDays === 1 ? "día" : "días"} para entregarla.${levelText}\n\nSi se vence, cada día de atraso transferirá ${Math.max(1, Math.ceil(cost * 0.1))} Papipuntos de ${partner.name} hacia ti, aunque su saldo quede en negativo.\n\n¿Confirmar canje?`,
-      )
-    ) return;
+  const openRedeemDialog = (reward: PapipointsReward) => {
+    setRedeemingReward(reward);
+    setRedeemComment("");
+  };
+
+  const closeRedeemDialog = () => {
+    if (redeemingReward && processingId === redeemingReward.id) return;
+    setRedeemingReward(null);
+    setRedeemComment("");
+  };
+
+  const redeem = async () => {
+    const reward = redeemingReward;
+    if (!reward) return;
     setProcessingId(reward.id);
     try {
-      const result = await onRedeemReward(reward);
+      const result = await onRedeemReward(reward, redeemComment);
       onMessage(result.message);
+      if (result.ok) {
+        setRedeemingReward(null);
+        setRedeemComment("");
+      }
     } finally {
       setProcessingId(null);
     }
@@ -500,6 +508,12 @@ export function PapipointsPanel({
                     <span className="reward-status-pill reward-status-active">🎁 POR ENTREGAR</span>
                     <strong>{claim.rewardName}</strong>
                     {claim.rewardDescription && <p>{claim.rewardDescription}</p>}
+                    {claim.purchaseComment && (
+                      <div className="reward-purchase-comment">
+                        <span>Comentario al canjear</span>
+                        <p>{claim.purchaseComment}</p>
+                      </div>
+                    )}
                     <small>Solicitada por {requester?.name} · La entrega {provider?.name} · Límite: {formatDueDate(claim.dueDate)}</small>
                   </div>
                   <b>{claim.cost} PP</b>
@@ -533,7 +547,7 @@ export function PapipointsPanel({
                 </div>
                 <b>{reward.cost} Papipuntos</b>
                 <div className="reward-actions">
-                  <button className="button button-primary" type="button" disabled={processingId === reward.id || activeClaimRewardIds.has(reward.id) || currentProfile.balance < (reward.cost || 0)} onClick={() => void redeem(reward)}>{processingId === reward.id ? "Procesando…" : activeClaimRewardIds.has(reward.id) ? "Canje activo" : "Canjear"}</button>
+                  <button className="button button-primary" type="button" disabled={processingId === reward.id || activeClaimRewardIds.has(reward.id) || currentProfile.balance < (reward.cost || 0)} onClick={() => openRedeemDialog(reward)}>{processingId === reward.id ? "Procesando…" : activeClaimRewardIds.has(reward.id) ? "Canje activo" : "Canjear"}</button>
                   <button className="button button-quiet" type="button" onClick={() => editReward(reward)}>Editar solicitud</button>
                   <button className="button button-quiet danger-action" type="button" onClick={() => void removeReward(reward)}>Eliminar</button>
                 </div>
@@ -641,6 +655,45 @@ export function PapipointsPanel({
           </div>
         ) : <p className="list-empty">Todavía no hay movimientos de Papipuntos.</p>}
       </section>
+
+      {redeemingReward && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeRedeemDialog}>
+          <section
+            className="action-confirm-modal reward-redeem-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reward-redeem-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="eyebrow">Confirmar canje</span>
+            <h2 id="reward-redeem-title">{redeemingReward.name}</h2>
+            <div className="action-confirm-copy">
+              <p>Costará <b>{redeemingReward.cost || 0} Papipuntos</b>. {partner.name} tendrá <b>{redeemingReward.fulfillmentDays} {redeemingReward.fulfillmentDays === 1 ? "día" : "días"}</b> para entregarla.</p>
+              {getLevelFromPapipoints(currentProfile.balance - (redeemingReward.cost || 0)) < currentProfile.level && (
+                <p>Tu nivel bajará de {currentProfile.level} a {getLevelFromPapipoints(currentProfile.balance - (redeemingReward.cost || 0))}.</p>
+              )}
+              <p>Si se vence, cada día de atraso transferirá {Math.max(1, Math.ceil((redeemingReward.cost || 0) * 0.1))} Papipuntos de {partner.name} hacia ti.</p>
+            </div>
+            <label className="field reward-redeem-comment-field">
+              <span>Comentario para {partner.name} <small>(opcional)</small></span>
+              <textarea
+                rows={4}
+                maxLength={500}
+                value={redeemComment}
+                onChange={(event) => setRedeemComment(event.target.value)}
+                placeholder="Ej.: Si puedes, prefiero hacerlo después de las 7:00 p. m."
+              />
+              <small>Este comentario pertenece únicamente a este canje y aparecerá en la recompensa prioritaria que debe entregar {partner.name}.</small>
+            </label>
+            <div className="action-confirm-buttons">
+              <button className="button button-primary" type="button" disabled={processingId === redeemingReward.id} onClick={() => void redeem()}>
+                {processingId === redeemingReward.id ? "Procesando…" : "Confirmar canje"}
+              </button>
+              <button className="button button-quiet" type="button" disabled={processingId === redeemingReward.id} onClick={closeRedeemDialog}>Volver</button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
