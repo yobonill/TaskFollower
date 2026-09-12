@@ -12,12 +12,16 @@ import { TaskCard } from "./components/TaskCard";
 import { getTaskFormDraftKey, TaskForm } from "./components/TaskForm";
 import { TaskTemplatesPanel } from "./components/TaskTemplatesPanel";
 import { StatisticsPanel } from "./components/StatisticsPanel";
+import { CalendarPanel } from "./components/CalendarPanel";
+import { DependencyChainsPanel } from "./components/DependencyChainsPanel";
 import { getAppUserByName, type AppUserDefinition } from "./config/appUsers";
 import { useAuth } from "./hooks/useAuth";
 import { usePapipoints, type PapipointsChange } from "./hooks/usePapipoints";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useTasks } from "./hooks/useTasks";
 import { useTemplates } from "./hooks/useTemplates";
+import { useDependencyChains } from "./hooks/useDependencyChains";
+import type { DependencyChain } from "./models/dependency";
 import {
   USERS,
   type Task,
@@ -40,7 +44,9 @@ import {
   isTaskOverdue,
   isTaskOverdueAt,
   sortPendingTasks,
+  toDateInputValue,
 } from "./utils/taskDates";
+import { createDependencyOccurrence, getProjectedRecurrenceDates } from "./utils/dependencyChains";
 import {
   COMPLETION_POINTS,
   EARLY_COMPLETION_BONUS,
@@ -57,7 +63,7 @@ import "./styles.css";
 const USER_FILTER_KEY = "taskFollower.taskFilter.v1";
 const APP_LOCALE = "es-DO";
 
-type View = "dashboard" | "manage" | "papipoints" | "statistics";
+type View = "dashboard" | "calendar" | "dependencies" | "manage" | "papipoints" | "statistics";
 type DashboardFilter = "all" | "overdue" | "today" | "pending" | "undated" | "incomplete" | "similar";
 type ImportMode = "merge" | "replace";
 
@@ -112,6 +118,9 @@ const isTaskArray = (value: unknown): value is Task[] =>
       ((task as Task).name === undefined || typeof (task as Task).name === "string"),
   );
 
+const isDependencyChainArray = (value: unknown): value is DependencyChain[] =>
+  Array.isArray(value) && value.every((chain) => chain && typeof chain === "object" && typeof (chain as DependencyChain).id === "string" && Array.isArray((chain as DependencyChain).steps));
+
 const sumEstimatedMinutes = (tasks: Task[]): number =>
   tasks.reduce((total, task) => total + (task.estimatedMinutes || 0), 0);
 
@@ -162,6 +171,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     deleteTemplate,
     retrySync: retryTemplatesSync,
   } = useTemplates(currentUser);
+  const {
+    chains: dependencyChains,
+    pendingCount: dependencyPendingCount,
+    saveChain: saveDependencyChain,
+    deleteChain: deleteDependencyChain,
+    retrySync: retryDependencySync,
+  } = useDependencyChains(currentUser);
   const { canInstall, install } = usePwaInstall();
 
   const [selectedUser, setSelectedUser] = useState<UserFilter>(() =>
@@ -183,11 +199,62 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   const [taskActionDialog, setTaskActionDialog] = useState<TaskActionDialog | null>(null);
   const [completionDialog, setCompletionDialog] = useState<CompletionDialogState | null>(null);
   const [installBannerHidden, setInstallBannerHidden] = useState(false);
+  const [focusedPapipointsItemId, setFocusedPapipointsItemId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
   const pointsTimerRef = useRef<number | null>(null);
+  const dependencyGeneratingRef = useRef(new Set<string>());
 
-  const totalPendingCount = taskPendingCount + papipointsPendingCount + templatesPendingCount;
+  const totalPendingCount = taskPendingCount + papipointsPendingCount + templatesPendingCount + dependencyPendingCount;
+
+  const papipointsActions = useMemo(() => [
+    ...rewards
+      .filter((reward) => reward.providerUserId === currentUser.uid && reward.status === "pending_configuration")
+      .map((reward) => ({ id: reward.id, label: `Definir “${reward.name}”` })),
+    ...rewardClaims
+      .filter((claim) => claim.providerUserId === currentUser.uid && claim.status === "pending")
+      .map((claim) => ({ id: claim.id, label: `Entregar “${claim.rewardName}”` })),
+  ], [currentUser.uid, rewardClaims, rewards]);
+
+  const openPapipointsAction = useCallback((itemId: string) => {
+    setFocusedPapipointsItemId(itemId);
+    setView("papipoints");
+    setMenuOpen(false);
+  }, []);
+
+  const createFirstDependencyOccurrence = useCallback(async (
+    chain: DependencyChain,
+    cycleDueDate: string,
+  ): Promise<string | undefined> => {
+    const cycleId = `${chain.id}:${cycleDueDate}`;
+    const generationKey = `${cycleId}:0`;
+    if (
+      dependencyGeneratingRef.current.has(generationKey) ||
+      tasks.some((task) => task.dependencyCycleId === cycleId && task.dependencyStepIndex === 0)
+    ) return undefined;
+    dependencyGeneratingRef.current.add(generationKey);
+    try {
+      const occurrence = createDependencyOccurrence(
+        chain, chain.steps[0], 0, cycleId, cycleDueDate, currentUser,
+      );
+      await saveTask(occurrence);
+      return occurrence.id;
+    } finally {
+      dependencyGeneratingRef.current.delete(generationKey);
+    }
+  }, [currentUser, saveTask, tasks]);
+
+  useEffect(() => {
+    const today = toDateInputValue(new Date());
+    const reconcile = async () => {
+      for (const chain of dependencyChains.filter((item) => item.active && item.cycleMode === "overlap")) {
+        for (const cycleDate of getProjectedRecurrenceDates(chain.firstDueDate, chain.recurrence, chain.firstDueDate, today)) {
+          await createFirstDependencyOccurrence(chain, cycleDate);
+        }
+      }
+    };
+    void reconcile();
+  }, [createFirstDependencyOccurrence, dependencyChains]);
 
   useEffect(() => {
     const settlePenaltyTasks = () => {
@@ -221,6 +288,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     setToast(nextToast);
     toastTimerRef.current = window.setTimeout(() => setToast(null), duration);
   }, []);
+
+  const handleCreateDependencyChain = useCallback(async (chain: DependencyChain) => {
+    await saveDependencyChain(chain);
+    await createFirstDependencyOccurrence(chain, chain.firstDueDate);
+    showToast({ message: "Cadena creada. El primer paso ya está activo." }, 4200);
+  }, [createFirstDependencyOccurrence, saveDependencyChain, showToast]);
 
   const buildLevelMessage = useCallback(
     (amount: number, userName: UserName): string | undefined => {
@@ -516,6 +589,39 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     setShowForm(true);
   };
 
+  const advanceDependencyChain = async (task: Task): Promise<string | undefined> => {
+    if (!task.dependencyChainId || !task.dependencyCycleId) return undefined;
+    const chain = dependencyChains.find((item) => item.id === task.dependencyChainId && item.active);
+    if (!chain) return undefined;
+    const currentIndex = task.dependencyStepIndex || 0;
+    const nextIndex = currentIndex + 1;
+    const timestamp = new Date().toISOString();
+
+    if (nextIndex < chain.steps.length) {
+      if (tasks.some((item) => item.dependencyCycleId === task.dependencyCycleId && item.dependencyStepIndex === nextIndex)) return undefined;
+      const nextTask = createDependencyOccurrence(
+        chain, chain.steps[nextIndex], nextIndex, task.dependencyCycleId,
+        task.dependencyCycleDueDate || task.dueDate || toDateInputValue(new Date()),
+        currentUser, task.id, timestamp,
+      );
+      await saveTask(nextTask);
+      return nextTask.id;
+    }
+
+    if (chain.cycleMode === "wait" && chain.recurrence.type !== "none") {
+      const next = getNextRecurrenceOccurrence(
+        task.dependencyCycleDueDate || chain.firstDueDate,
+        chain.recurrence,
+        1,
+        timestamp,
+      );
+      if (!chain.recurrence.endDate || next.dueDate <= chain.recurrence.endDate) {
+        return createFirstDependencyOccurrence(chain, next.dueDate);
+      }
+    }
+    return undefined;
+  };
+
   const executeTaskCompletion = async (
     task: Task,
     completedAt: string,
@@ -530,6 +636,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       recoverRecurrence,
     });
     const pointChanges = await awardTaskCompletion(task, completedAt, currentUser);
+    const generatedDependencyTaskId = await advanceDependencyChain(task);
 
     if (isPenaltyTask) {
       showPointsChangesFeedback(pointChanges, `Penalización resuelta: ${task.name}`);
@@ -601,6 +708,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       action: async () => {
         const removed = await removeTaskCompletionRewards(task.id);
         await undoComplete(undo);
+        if (generatedDependencyTaskId) await deleteTask(generatedDependencyTaskId);
         showPointsChangesFeedback(removed, "Se deshizo la tarea completada");
         showToast(
           {
@@ -684,6 +792,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
       recurrenceOccurrenceIndex:
         task.recurrence.type === "none" ? undefined : 1,
       overduePenaltyStartDate: undefined,
+      taskType: "normal",
+      dependencyChainId: undefined,
+      dependencyCycleId: undefined,
+      dependencyCycleDueDate: undefined,
+      dependencyStepIndex: undefined,
+      dependencyStepCount: undefined,
+      dependencyParentTaskId: undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -1076,6 +1191,43 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
     }, 5200);
   };
 
+  const executeDependencyScope = async (
+    task: Task,
+    action: "cancel" | "delete",
+    scope: "only" | "downstream" | "future" | "definition",
+  ) => {
+    setTaskActionDialog(null);
+    const chain = dependencyChains.find((item) => item.id === task.dependencyChainId);
+    const stepIndex = task.dependencyStepIndex || 0;
+    const targets = tasks.filter((item) => {
+      if (item.id === task.id) return true;
+      if (item.dependencyChainId !== task.dependencyChainId) return false;
+      if (scope === "only") return false;
+      if (scope === "downstream") return item.dependencyCycleId === task.dependencyCycleId && (item.dependencyStepIndex || 0) > stepIndex;
+      if (scope === "future") return item.status === "pending" && (item.dependencyCycleDueDate || "") >= (task.dependencyCycleDueDate || "");
+      return item.status === "pending";
+    });
+
+    if ((scope === "future" || scope === "definition") && chain) {
+      if (scope === "definition") await deleteDependencyChain(chain.id);
+      else await saveDependencyChain({ ...chain, active: false, updatedAt: new Date().toISOString(), lastModifiedByUserId: currentUser.uid });
+    }
+
+    for (const item of targets) {
+      if (action === "cancel" && item.status === "pending") await executeCancelTask(item, false);
+      if (action === "delete") await executeDeleteTask(item, false);
+    }
+    showToast({
+      message: scope === "only"
+        ? `Solo esta ocurrencia fue ${action === "cancel" ? "cancelada" : "eliminada"}. La cadena no avanzó.`
+        : scope === "downstream"
+          ? "Esta ocurrencia y sus pasos dependientes ya creados fueron procesados."
+          : scope === "future"
+            ? "Esta ocurrencia y las futuras fueron detenidas; el historial se conserva."
+            : "La definición y sus tareas pendientes fueron retiradas; el historial completado se conserva.",
+    }, 5200);
+  };
+
   const handleStopRecurrence = (task: Task) => {
     if ((task.taskType || "normal") === "penalty") return;
     setTaskActionDialog({ kind: "stop-recurrence", task });
@@ -1125,9 +1277,10 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
   const handleExport = () => {
     const payload: TaskExport = {
-      schemaVersion: 7,
+      schemaVersion: 8,
       exportedAt: new Date().toISOString(),
       tasks,
+      dependencyChains,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: "application/json",
@@ -1157,6 +1310,9 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         : isTaskArray((parsed as TaskExport)?.tasks)
           ? (parsed as TaskExport).tasks
           : null;
+      const importedChains = isDependencyChainArray((parsed as TaskExport)?.dependencyChains)
+        ? (parsed as TaskExport).dependencyChains || []
+        : [];
 
       if (!importedTasks) {
         window.alert("Este archivo no contiene una lista válida de tareas de TaskFollower.");
@@ -1174,6 +1330,12 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
 
       if (importMode === "replace") await replaceTasks(importedTasks);
       else await mergeTasks(importedTasks);
+      if (importMode === "replace") {
+        for (const chain of dependencyChains.filter((item) => !importedChains.some((candidate) => candidate.id === item.id))) {
+          await deleteDependencyChain(chain.id);
+        }
+      }
+      for (const chain of importedChains) await saveDependencyChain(chain);
       showToast({
         message:
           "Importación completada. Las tareas importadas no generan Papipuntos por creación.",
@@ -1194,7 +1356,7 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
   };
 
   const retryAllSync = async () => {
-    await Promise.all([retryTaskSync(), retryPapipointsSync(), retryTemplatesSync()]);
+    await Promise.all([retryTaskSync(), retryPapipointsSync(), retryTemplatesSync(), retryDependencySync()]);
   };
 
   const changeView = (nextView: View) => {
@@ -1446,6 +1608,17 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
         const penaltyText = getPenaltyPreview(task);
         const isPenaltyTask = (task.taskType || "normal") === "penalty";
 
+        if (task.dependencyChainId && (taskActionDialog.kind === "cancel" || taskActionDialog.kind === "delete")) {
+          return {
+            title: taskActionDialog.kind === "cancel" ? "Cancelar paso de dependencia" : "Eliminar paso de dependencia",
+            paragraphs: [
+              penaltyText,
+              "Completar este paso es la única acción que activa el siguiente. Cancelarlo o eliminarlo no hará avanzar la cadena.",
+              "Elige el alcance. Las tareas completadas se conservan como historial salvo que selecciones expresamente esa ocurrencia histórica.",
+            ].filter(Boolean),
+          };
+        }
+
         if (isPenaltyTask && taskActionDialog.kind === "cancel") {
           const accrued = getPenaltyTaskAccruedPoints(task);
           return {
@@ -1602,6 +1775,15 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
           >
             <span className="sidebar-icon">★</span>
             <span className="sidebar-label">Papipuntos</span>
+            {papipointsActions.length > 0 && <span className="nav-action-badge" aria-label={`${papipointsActions.length} acciones pendientes`}>{papipointsActions.length}</span>}
+          </button>
+
+          <button className={`sidebar-item ${view === "calendar" ? "sidebar-item-active" : ""}`} type="button" title="Calendario" onClick={() => changeView("calendar")}>
+            <span className="sidebar-icon">▦</span><span className="sidebar-label">Calendario</span>
+          </button>
+
+          <button className={`sidebar-item ${view === "dependencies" ? "sidebar-item-active" : ""}`} type="button" title="Tareas con dependencia" onClick={() => changeView("dependencies")}>
+            <span className="sidebar-icon">⇢</span><span className="sidebar-label">Dependencias</span>
           </button>
 
           <button
@@ -1812,6 +1994,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
               </section>
             )}
 
+            {papipointsActions.length > 0 && (
+              <section className="pending-action-banner">
+                <div><span className="eyebrow">Pendiente de ti</span><strong>{papipointsActions.length === 1 ? "1 acción de Papipuntos espera tu atención" : `${papipointsActions.length} acciones de Papipuntos esperan tu atención`}</strong><small>{papipointsActions[0].label}</small></div>
+                <button className="button button-primary" type="button" onClick={() => openPapipointsAction(papipointsActions[0].id)}>Revisar ahora</button>
+              </section>
+            )}
+
             {visibleRewardClaims.length > 0 && renderRewardClaims()}
             {dashboardFilter === "all" && penaltyTasks.length > 0 && renderPenaltyTasks()}
 
@@ -1912,6 +2101,26 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             onCompleteRewardClaim={completeRewardClaim}
             onCancelRewardClaim={cancelRewardClaim}
             onMessage={(message) => showToast({ message }, 4200)}
+            focusedItemId={focusedPapipointsItemId}
+          />
+        )}
+
+        {view === "calendar" && <CalendarPanel tasks={tasks} chains={dependencyChains} />}
+
+        {view === "dependencies" && (
+          <DependencyChainsPanel
+            currentUser={currentUser}
+            chains={dependencyChains}
+            onCreate={handleCreateDependencyChain}
+            onStop={async (chain) => {
+              await saveDependencyChain({ ...chain, active: false, updatedAt: new Date().toISOString(), lastModifiedByUserId: currentUser.uid });
+              showToast({ message: "Cadena detenida. Las tareas ya creadas se conservan." }, 4200);
+            }}
+            onDelete={async (chain) => {
+              if (!window.confirm(`Eliminar la definición “${chain.name}” detendrá nuevas tareas. El historial se conservará.\n\n¿Continuar?`)) return;
+              await deleteDependencyChain(chain.id);
+              showToast({ message: "Definición eliminada. Las tareas e historial existentes se conservan." }, 4200);
+            }}
           />
         )}
 
@@ -2323,6 +2532,19 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
             </div>
 
             <div className="action-confirm-buttons">
+              {taskActionDialog.task.dependencyChainId && (taskActionDialog.kind === "cancel" || taskActionDialog.kind === "delete") && (() => {
+                const task = taskActionDialog.task;
+                const action = taskActionDialog.kind;
+                const hasDownstream = tasks.some((item) => item.dependencyCycleId === task.dependencyCycleId && (item.dependencyStepIndex || 0) > (task.dependencyStepIndex || 0));
+                const recurring = dependencyChains.find((chain) => chain.id === task.dependencyChainId)?.recurrence.type !== "none";
+                return <>
+                  <button className="button button-primary" type="button" onClick={() => void executeDependencyScope(task, action, "only")}>Solo esta ocurrencia</button>
+                  {hasDownstream && <button className="button button-secondary" type="button" onClick={() => void executeDependencyScope(task, action, "downstream")}>Esta y sus pasos dependientes</button>}
+                  {recurring && <button className="button button-secondary" type="button" onClick={() => void executeDependencyScope(task, action, "future")}>Esta y futuras ocurrencias</button>}
+                  <button className="button button-quiet danger-action" type="button" onClick={() => void executeDependencyScope(task, action, "definition")}>Toda la definición de dependencia</button>
+                </>;
+              })()}
+
               {taskActionDialog.kind === "stop-recurrence" && (
                 <button className="button button-primary" type="button" onClick={() => void executeStopRecurrence(taskActionDialog.task)}>
                   Detener recurrencia
@@ -2346,13 +2568,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 </>
               )}
 
-              {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type === "none" && (
+              {taskActionDialog.kind === "cancel" && !taskActionDialog.task.dependencyChainId && taskActionDialog.task.recurrence.type === "none" && (
                 <button className="button button-primary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, false)}>
                   {(taskActionDialog.task.taskType || "normal") === "penalty" ? "Cancelar penalización" : "Cancelar tarea"}
                 </button>
               )}
 
-              {taskActionDialog.kind === "cancel" && taskActionDialog.task.recurrence.type !== "none" && (
+              {taskActionDialog.kind === "cancel" && !taskActionDialog.task.dependencyChainId && taskActionDialog.task.recurrence.type !== "none" && (
                 <>
                   <button className="button button-primary" type="button" onClick={() => void executeCancelTask(taskActionDialog.task, true)}>
                     Cancelar solo esta ocurrencia
@@ -2363,13 +2585,13 @@ function TaskFollowerApp({ currentUser, onLogout }: TaskFollowerAppProps) {
                 </>
               )}
 
-              {taskActionDialog.kind === "delete" && taskActionDialog.task.recurrence.type === "none" && (
+              {taskActionDialog.kind === "delete" && !taskActionDialog.task.dependencyChainId && taskActionDialog.task.recurrence.type === "none" && (
                 <button className="button button-primary danger-button" type="button" onClick={() => void executeDeleteTask(taskActionDialog.task, false)}>
                   Eliminar permanentemente
                 </button>
               )}
 
-              {taskActionDialog.kind === "delete" && taskActionDialog.task.recurrence.type !== "none" && (
+              {taskActionDialog.kind === "delete" && !taskActionDialog.task.dependencyChainId && taskActionDialog.task.recurrence.type !== "none" && (
                 <>
                   <button className="button button-primary danger-button" type="button" onClick={() => void executeDeleteTask(taskActionDialog.task, true)}>
                     Eliminar solo esta ocurrencia

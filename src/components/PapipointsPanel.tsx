@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { getAppUserByUid, getOtherAppUser, type AppUserDefinition } from "../config/appUsers";
 import type {
   PapipointsProfile,
@@ -32,6 +32,7 @@ interface PapipointsPanelProps {
   onCompleteRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   onCancelRewardClaim: (claim: PapipointsRewardClaim) => Promise<RedeemResult>;
   onMessage: (message: string) => void;
+  focusedItemId?: string | null;
 }
 
 const transactionTypeLabels: Record<PapipointsTransaction["type"], string> = {
@@ -142,6 +143,7 @@ export function PapipointsPanel({
   onCompleteRewardClaim,
   onCancelRewardClaim,
   onMessage,
+  focusedItemId,
 }: PapipointsPanelProps) {
   const [editingReward, setEditingReward] = useState<PapipointsReward | null>(null);
   const [form, setForm] = useState(emptyRewardForm);
@@ -153,6 +155,13 @@ export function PapipointsPanel({
   const [redeemingReward, setRedeemingReward] = useState<PapipointsReward | null>(null);
   const [redeemComment, setRedeemComment] = useState("");
   const [showRules, setShowRules] = useState(false);
+
+  useEffect(() => {
+    if (!focusedItemId) return;
+    window.setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-pending-action-id="${CSS.escape(focusedItemId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+  }, [focusedItemId]);
 
   const currentProfile = profiles[currentUser.name];
   const partner = getOtherAppUser(currentUser.name);
@@ -453,7 +462,7 @@ export function PapipointsPanel({
           </div>
           <div className="reward-list">
             {pendingForMe.map((reward) => (
-              <article className="reward-card reward-pending" key={reward.id}>
+              <article className={`reward-card reward-pending ${focusedItemId === reward.id ? "pending-action-focus" : ""}`} data-pending-action-id={reward.id} key={reward.id}>
                 <div>
                   <span className="reward-status-pill">PENDIENTE</span>
                   <strong>{reward.name}</strong>
@@ -503,7 +512,7 @@ export function PapipointsPanel({
               const isProvider = claim.providerUserId === currentUser.uid;
               const isRequester = claim.requesterUserId === currentUser.uid;
               return (
-                <article className="reward-card reward-claim-card" key={claim.id}>
+                <article className={`reward-card reward-claim-card ${focusedItemId === claim.id ? "pending-action-focus" : ""}`} data-pending-action-id={claim.id} key={claim.id}>
                   <div>
                     <span className="reward-status-pill reward-status-active">🎁 POR ENTREGAR</span>
                     <strong>{claim.rewardName}</strong>

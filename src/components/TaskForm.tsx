@@ -400,9 +400,11 @@ export function TaskForm({
 
   const buildTask = (): Task => {
     const timestamp = new Date().toISOString();
-    const taskType: TaskType = editingTask?.taskType === "penalty" || (!editingTask && form.taskType === "penalty")
-      ? "penalty"
-      : "normal";
+    const taskType: TaskType = editingTask?.taskType === "dependency"
+      ? "dependency"
+      : editingTask?.taskType === "penalty" || (!editingTask && form.taskType === "penalty")
+        ? "penalty"
+        : "normal";
     const isPenalty = taskType === "penalty";
     const isIncomplete = missingFields.length > 0;
     const isPrivate = !isPenalty && !isIncomplete && form.isPrivate;

@@ -80,11 +80,15 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     (isUserName(task.assignedBy) ? task.assignedBy : undefined) ||
     (isUserName(task.assignedTo) ? task.assignedTo : undefined) ||
     "Yorki";
-  const taskType = task.taskType === "penalty" ? "penalty" : "normal";
+  const taskType = task.taskType === "penalty"
+    ? "penalty"
+    : task.taskType === "dependency"
+      ? "dependency"
+      : "normal";
 
   const isIncomplete =
     !(typeof task.name === "string" && task.name.trim()) ||
-    (taskType === "normal" && !(task.priority || legacyUrgency));
+    (taskType !== "penalty" && !(task.priority || legacyUrgency));
   const requestedPrivate =
     taskType === "normal" && task.isPrivate === true && !isIncomplete;
   const privateOwnerUserId = requestedPrivate
@@ -118,7 +122,7 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
 
   const assignedToUserIds = getAssigneeUserIds(assignedTo);
   const dueDate =
-    taskType === "normal" &&
+    taskType !== "penalty" &&
     typeof task.dueDate === "string" &&
     task.dueDate.trim()
       ? task.dueDate
@@ -136,13 +140,13 @@ const normalizeTask = (taskValue: Task | LegacyTask): Task => {
     name: typeof task.name === "string" ? task.name : "",
     description: task.description || "",
     estimatedMinutes:
-      taskType === "normal" && Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
+      taskType !== "penalty" && Number.isFinite(estimatedMinutes) && estimatedMinutes > 0
         ? Math.max(1, estimatedMinutes)
         : undefined,
     dueDate,
     dueTime: dueDate && task.dueTime ? task.dueTime : undefined,
     priority:
-      taskType === "normal" ? task.priority || legacyUrgency || undefined : undefined,
+      taskType !== "penalty" ? task.priority || legacyUrgency || undefined : undefined,
     assignedBy,
     assignedTo,
     createdByUserId:
@@ -402,10 +406,14 @@ const needsIdentityMigration = (task: Partial<Task>): boolean => {
     return true;
   }
 
-  const taskType = task.taskType === "penalty" ? "penalty" : "normal";
+  const taskType = task.taskType === "penalty"
+    ? "penalty"
+    : task.taskType === "dependency"
+      ? "dependency"
+      : "normal";
   const incomplete =
     !(typeof task.name === "string" && task.name.trim()) ||
-    (taskType === "normal" && !task.priority);
+    (taskType !== "penalty" && !task.priority);
   if (incomplete) {
     if (task.isUnassigned !== true) return true;
     if (currentIds.length || task.assignedToUserId) return true;

@@ -152,6 +152,9 @@ export function TaskCard({
           ) : (
             <span className="priority-label">Prioridad {priorityLabels[priority]}</span>
           )}
+          {task.taskType === "dependency" && (
+            <span className="dependency-task-label">⇢ Dependencia · paso {(task.dependencyStepIndex || 0) + 1} de {task.dependencyStepCount || "?"}</span>
+          )}
           {!isPenalty && task.isPrivate ? (
             <span className="private-task-label">🔒 Privada</span>
           ) : !isPenalty && task.assignedTo === "Ambos" ? (

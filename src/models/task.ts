@@ -1,10 +1,12 @@
+import type { DependencyChain } from "./dependency";
+
 export const USERS = ["Yisel", "Yorki"] as const;
 export type UserName = (typeof USERS)[number];
 export type TaskAssignee = UserName | "Ambos";
 export type UserFilter = "all" | UserName;
 
 export type TaskPriority = "low" | "normal" | "high" | "critical";
-export type TaskType = "normal" | "penalty";
+export type TaskType = "normal" | "penalty" | "dependency";
 export type TaskStatus = "pending" | "done" | "cancelled";
 export type RecurrenceType = "none" | "daily" | "weekly" | "weekdays" | "monthly";
 export type WeekdayNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -13,6 +15,7 @@ export type TaskSource =
   | "import"
   | "duplicate"
   | "recurrence"
+  | "dependency"
   | "migration";
 
 export interface TaskRecurrence {
@@ -63,6 +66,13 @@ export interface Task {
   penaltyPointsPerHour?: number;
   /** 1-based occurrence within the scheduled day (for example 2 of 3). */
   recurrenceOccurrenceIndex?: number;
+  /** Links an activated dependency step to its reusable chain definition. */
+  dependencyChainId?: string;
+  dependencyCycleId?: string;
+  dependencyCycleDueDate?: string;
+  dependencyStepIndex?: number;
+  dependencyStepCount?: number;
+  dependencyParentTaskId?: string;
   /** Earliest overdue calendar day that may be charged after responsibility changes. */
   overduePenaltyStartDate?: string;
   source?: TaskSource;
@@ -77,9 +87,10 @@ export interface Task {
 }
 
 export interface TaskExport {
-  schemaVersion: 7;
+  schemaVersion: 8;
   exportedAt: string;
   tasks: Task[];
+  dependencyChains?: DependencyChain[];
 }
 
 export interface CompletedTaskUndo {
